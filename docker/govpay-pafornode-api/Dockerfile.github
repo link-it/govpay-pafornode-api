@@ -1,0 +1,52 @@
+FROM eclipse-temurin:25-jre-alpine
+
+ARG govpay_pafornode_api_fullversion
+ARG govpay_pafornode_api_home=/opt/govpay-pafornode
+ARG govpay_pafornode_api_log=/var/log/govpay-pafornode
+
+LABEL maintainer="Link.it s.r.l."
+LABEL description="GovPay PaForNode SOAP API"
+LABEL govpay.pafornode.version="${govpay_pafornode_api_fullversion}"
+USER root
+
+ENV GOVPAY_PAFORNODE_FULLVERSION=${govpay_pafornode_api_fullversion} \
+GOVPAY_PAFORNODE_LOGDIR=${govpay_pafornode_api_log} \
+GOVPAY_PAFORNODE_HOME=${govpay_pafornode_api_home} \
+TZ=Europe/Rome
+
+
+RUN set -eux; \
+apk update; \
+apk upgrade; \
+apk add --no-cache bash curl tar unzip netcat-openbsd tzdata; \
+rm -rf /var/cache/apk/*; \
+echo "${TZ}" > /etc/timezone; \
+addgroup -S govpay ; \
+adduser -S -G govpay govpay; \
+mkdir -p ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR}; \
+chown -R govpay:govpay ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR}
+
+WORKDIR ${GOVPAY_PAFORNODE_HOME}
+
+# Download PAFORNODE JAR from GitHub release
+RUN set -eux; \
+curl -kL -sS -q -o /opt/govpay-pafornode/govpay-pafornode-api.jar  "https://github.com/link-it/govpay-pafornode-api/releases/download/${GOVPAY_PAFORNODE_FULLVERSION}/govpay-pafornode-api-${GOVPAY_PAFORNODE_FULLVERSION}.jar";
+
+
+# Copy entrypoint and initialization scripts
+COPY commons/entrypoint.sh /usr/local/bin/
+RUN chown -R govpay:0 /usr/local/bin/entrypoint.sh ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR} \
+&& chmod -Rf g+rwX ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR} \
+&& chmod ug=rx /usr/local/bin/entrypoint.sh
+
+
+
+USER govpay
+
+ENV LOGGING_FILE_NAME=${GOVPAY_PAFORNODE_LOGDIR}/govpay-pafornode-api.log \
+    LOGGING_DIRECTORYPATH=${GOVPAY_PAFORNODE_LOGDIR} \
+    LOGGING_FILEPREFIX=govpay-pafornode-api
+
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD []

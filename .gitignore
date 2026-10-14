@@ -27,3 +27,6 @@ docker/jdbc-drivers/*.jar
 
 # Deploy package generato dal target a partire dal jar + docker/
 *-deploy.zip
+
+# Report di docker/scan_image.sh
+image-scan-report/

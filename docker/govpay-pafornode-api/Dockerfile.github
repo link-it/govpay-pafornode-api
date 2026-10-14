@@ -1,6 +1,9 @@
 FROM eclipse-temurin:25-jre-alpine
 
 ARG govpay_pafornode_api_fullversion
+# sha256 del jar della release: la pipeline lo calcola dall'artifact della
+# build, build_image.sh lo legge dalle API delle release di GitHub.
+ARG govpay_pafornode_api_sha256
 ARG govpay_pafornode_api_home=/opt/govpay-pafornode
 ARG govpay_pafornode_api_log=/var/log/govpay-pafornode
 
@@ -18,7 +21,10 @@ TZ=Europe/Rome
 RUN set -eux; \
 apk update; \
 apk upgrade; \
-apk add --no-cache bash curl tar unzip netcat-openbsd tzdata; \
+# Solo cio' che serve a runtime: bash per l'entrypoint, tzdata per il fuso
+# orario. tar, unzip, netcat e curl non sono usati dall'entrypoint, e ogni
+# pacchetto in piu' e' superficie esposta e segnalazioni della scansione.
+apk add --no-cache bash tzdata; \
 rm -rf /var/cache/apk/*; \
 echo "${TZ}" > /etc/timezone; \
 addgroup -S govpay ; \
@@ -28,9 +34,16 @@ chown -R govpay:govpay ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR}
 
 WORKDIR ${GOVPAY_PAFORNODE_HOME}
 
-# Download PAFORNODE JAR from GitHub release
+# Download del jar dalla release GitHub, con verifica del certificato e del
+# checksum: senza checksum l'immagine conterrebbe qualunque file venisse
+# servito a quell'indirizzo. curl serve solo qui: installato e rimosso nello
+# stesso passo, non resta nell'immagine.
 RUN set -eux; \
-curl -kL -sS -q -o /opt/govpay-pafornode/govpay-pafornode-api.jar  "https://github.com/link-it/govpay-pafornode-api/releases/download/${GOVPAY_PAFORNODE_FULLVERSION}/govpay-pafornode-api-${GOVPAY_PAFORNODE_FULLVERSION}.jar";
+apk add --no-cache --virtual .download curl; \
+test -n "${govpay_pafornode_api_sha256}" || { echo "Manca il build-arg govpay_pafornode_api_sha256 (sha256 del jar della release)"; exit 1; }; \
+curl -fL -sS -o /opt/govpay-pafornode/govpay-pafornode-api.jar "https://github.com/link-it/govpay-pafornode-api/releases/download/${GOVPAY_PAFORNODE_FULLVERSION}/govpay-pafornode-api-${GOVPAY_PAFORNODE_FULLVERSION}.jar"; \
+echo "${govpay_pafornode_api_sha256}  /opt/govpay-pafornode/govpay-pafornode-api.jar" | sha256sum -c -; \
+apk del .download
 
 
 # Copy entrypoint and initialization scripts

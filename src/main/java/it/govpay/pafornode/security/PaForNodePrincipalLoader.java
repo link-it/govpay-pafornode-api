@@ -2,7 +2,6 @@ package it.govpay.pafornode.security;
 
 import java.util.List;
 
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,14 +24,13 @@ import it.govpay.common.entity.IntermediarioEntity;
  * idStation}/{@code idPA} dichiarati nel body SOAP resta — come nel legacy —
  * un controllo di business separato, gia' in {@code PaForNodeEndpoint}.
  *
- * <p>Non registrato con profilo {@code test}: i test di integrazione SOAP
- * restano cosi' focalizzati sulla logica di business, senza dover simulare
- * un certificato client reale (richiederebbe una chain TLS o un
- * {@code SecurityMockMvcRequestPostProcessors.x509} dedicato — vedi il test
- * di questa classe per la verifica diretta del loader).
+ * <p>Registrato in tutti i profili, incluso {@code test}: il profilo di test
+ * abilita il metodo HEADER (il piu' semplice da simulare via HTTP, un header
+ * anziche' un certificato) proprio per esercitare per davvero la catena di
+ * sicurezza e il confronto principal/idBrokerPA in {@code PaForNodeEndpoint},
+ * invece di lasciare quel confronto senza autenticazione nei test.
  */
 @Component
-@Profile("!test")
 public class PaForNodePrincipalLoader implements GovpayPrincipalLoader {
 
 	private final IntermediarioPrincipalRepository intermediarioPrincipalRepository;

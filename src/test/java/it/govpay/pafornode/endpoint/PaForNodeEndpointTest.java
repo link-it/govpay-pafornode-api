@@ -11,6 +11,7 @@ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -39,6 +40,12 @@ import it.govpay.common.utils.IuvUtils.IdentificativiPagamento;
  * richiesta SOAP reale via HTTP) — stesso principio dei test di integrazione di
  * govpay-pendenze-api: il percorso vero (WSDL/routing/unmarshalling/business logic/
  * persistenza/marshalling), non solo l'endpoint invocato come metodo Java.
+ *
+ * <p>La catena di sicurezza e' attiva anche qui (metodo HEADER, abilitato solo nel profilo
+ * {@code test} — il piu' semplice da simulare via HTTP): ogni richiesta porta l'header con il
+ * principal registrato sull'intermediario di fixture, cosi' il confronto principal/idBrokerPA
+ * in {@code PaForNodeEndpoint} e' esercitato per davvero, non bypassato da un'autenticazione
+ * assente.
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
@@ -47,6 +54,8 @@ class PaForNodeEndpointTest {
 	private static final String COD_DOMINIO = "12345678901";
 	private static final String COD_INTERMEDIARIO = "BROKER-TEST";
 	private static final String COD_STAZIONE = "STAZIONE-TEST";
+	private static final String PRINCIPAL_INTERMEDIARIO = "CN=broker-test.example.it";
+	private static final String HEADER_PRINCIPAL = "X-Pre-Auth-User";
 
 	@LocalServerPort
 	private int port;
@@ -82,6 +91,7 @@ class PaForNodeEndpointTest {
 		IntermediarioEntity intermediario = intermediarioRepository.save(IntermediarioEntity.builder()
 				.codIntermediario(COD_INTERMEDIARIO)
 				.denominazione("Intermediario di test")
+				.principal(PRINCIPAL_INTERMEDIARIO)
 				.abilitato(true)
 				.build());
 
@@ -152,6 +162,7 @@ class PaForNodeEndpointTest {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.TEXT_XML);
 		headers.add("SOAPAction", "paVerifyPaymentNotice");
+		headers.add(HEADER_PRINCIPAL, PRINCIPAL_INTERMEDIARIO);
 		return restTemplate.postForEntity("http://localhost:" + port + "/ws", new HttpEntity<>(body, headers),
 				String.class);
 	}
@@ -182,8 +193,10 @@ class PaForNodeEndpointTest {
 
 	@Test
 	void wsdlEspostoSullaPathAttesa() {
-		ResponseEntity<String> risposta = restTemplate.getForEntity("http://localhost:" + port + "/ws/paForNode.wsdl",
-				String.class);
+		HttpHeaders headers = new HttpHeaders();
+		headers.add(HEADER_PRINCIPAL, PRINCIPAL_INTERMEDIARIO);
+		ResponseEntity<String> risposta = restTemplate.exchange("http://localhost:" + port + "/ws/paForNode.wsdl",
+				HttpMethod.GET, new HttpEntity<>(headers), String.class);
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("paVerifyPaymentNotice");

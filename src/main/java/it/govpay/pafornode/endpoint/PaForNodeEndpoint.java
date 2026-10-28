@@ -5,6 +5,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import javax.xml.datatype.DatatypeConfigurationException;
@@ -14,6 +15,8 @@ import javax.xml.datatype.XMLGregorianCalendar;
 import jakarta.xml.bind.JAXBElement;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.ws.server.endpoint.annotation.Endpoint;
 import org.springframework.ws.server.endpoint.annotation.PayloadRoot;
@@ -113,6 +116,8 @@ public class PaForNodeEndpoint {
 
 		IntermediarioEntity intermediario = intermediarioRepository.findByCodIntermediario(request.getIdBrokerPA())
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_INTERMEDIARIO_ERRATO, codDominio));
+		verificaPrincipalAutenticato(intermediario, codDominio);
+
 		StazioneEntity stazione = stazioneRepository
 				.findByIntermediarioCodIntermediarioAndCodStazione(intermediario.getCodIntermediario(),
 						request.getIdStation())
@@ -129,6 +134,39 @@ public class PaForNodeEndpoint {
 		verificaStatoPagabile(pendenza, codDominio);
 
 		return buildRispostaPositiva(pendenza, dominio);
+	}
+
+	/**
+	 * L'identita' che ha autenticato la chiamata (certificato client o equivalente,
+	 * secondo il metodo {@code govpay.auth.*} abilitato) deve corrispondere
+	 * all'intermediario dichiarato in {@code idBrokerPA} — altrimenti un intermediario
+	 * autenticato potrebbe dichiararsi un intermediario diverso dal proprio. Stesso
+	 * controllo del legacy ({@code AuthorizationManager.checkPrincipal}, eseguito quando
+	 * {@code isPddAuthEnable()}); qui e' sempre attivo invece che opzionale, perche' a
+	 * differenza del legacy l'autenticazione non e' opzionale in questa generazione: se si
+	 * arriva a questo metodo la catena di sicurezza di govpay-common-auth ha gia'
+	 * autenticato qualcuno (nega l'accesso prima, altrimenti) — un {@code Authentication}
+	 * assente e' quindi trattato come fallimento dell'autorizzazione, non come "controllo
+	 * disabilitato".
+	 */
+	private void verificaPrincipalAutenticato(IntermediarioEntity intermediario, String codDominio) {
+		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+		if (authentication == null) {
+			// Esplicito, non delegato al confronto sotto: Objects.equals(null, null) supererebbe
+			// il controllo se anche l'intermediario non avesse un principal configurato — un
+			// esito corretto per caso, non per costruzione. Nessuna richiesta dovrebbe comunque
+			// arrivare qui senza autenticazione (la catena di sicurezza la blocca prima), ma il
+			// metodo deve rifiutare esplicitamente, non "passare" per coincidenza.
+			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
+					"Autorizzazione fallita: principal non fornito.", codDominio);
+		}
+		String principalAutenticato = authentication.getName();
+		if (!Objects.equals(intermediario.getPrincipal(), principalAutenticato)) {
+			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
+					"Autorizzazione fallita: principal fornito (" + principalAutenticato
+							+ ") non valido per l'intermediario (" + intermediario.getCodIntermediario() + ").",
+					codDominio);
+		}
 	}
 
 	/**

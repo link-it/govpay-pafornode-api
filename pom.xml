@@ -30,6 +30,12 @@
 		<!-- govpay-common (not in BOM) -->
 		<govpay-common.version>2.0.4-SNAPSHOT</govpay-common.version>
 
+		<!-- govpay-common-pendenze (not in BOM) -->
+		<govpay-common-pendenze.version>1.0.0-SNAPSHOT</govpay-common-pendenze.version>
+
+		<!-- govpay-common-auth (not in BOM) -->
+		<govpay-common-auth.version>1.0.0</govpay-common-auth.version>
+
 		<owasp.falsePositives.dir>src/main/resources/owasp/falsePositives</owasp.falsePositives.dir>
 		<!-- owasp config -->
 		<owasp>verify</owasp> <!-- owasp phase, use 'none' for disable -->
@@ -42,6 +48,10 @@
 	</properties>
 
 	<profiles>
+		<!-- Deploy come servizio standalone (fat jar): stesso schema di govpay-pendenze-api.
+		     I driver DB restano 'provided' ed esclusi dal repackage, forniti a runtime
+		     dall'ambiente di esecuzione (govpay-common-pendenze supporta tutti e cinque i
+		     dialetti). -->
 		<profile>
 			<id>jar</id>
 			<activation>
@@ -50,6 +60,77 @@
 			<properties>
 				<packaging.type>jar</packaging.type>
 			</properties>
+			<dependencies>
+				<dependency>
+					<groupId>org.postgresql</groupId>
+					<artifactId>postgresql</artifactId>
+					<scope>provided</scope>
+				</dependency>
+				<dependency>
+					<groupId>com.h2database</groupId>
+					<artifactId>h2</artifactId>
+					<scope>provided</scope>
+				</dependency>
+				<dependency>
+					<groupId>com.oracle.database.jdbc</groupId>
+					<artifactId>ojdbc11</artifactId>
+					<scope>provided</scope>
+				</dependency>
+				<dependency>
+					<groupId>com.mysql</groupId>
+					<artifactId>mysql-connector-j</artifactId>
+					<scope>provided</scope>
+				</dependency>
+				<dependency>
+					<groupId>com.microsoft.sqlserver</groupId>
+					<artifactId>mssql-jdbc</artifactId>
+					<scope>provided</scope>
+				</dependency>
+			</dependencies>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.springframework.boot</groupId>
+						<artifactId>spring-boot-maven-plugin</artifactId>
+						<executions>
+							<execution>
+								<goals>
+									<goal>repackage</goal>
+								</goals>
+							</execution>
+						</executions>
+						<configuration>
+							<layout>ZIP</layout>
+							<excludes>
+								<exclude>
+									<groupId>org.projectlombok</groupId>
+									<artifactId>lombok</artifactId>
+								</exclude>
+								<exclude>
+									<groupId>org.postgresql</groupId>
+									<artifactId>postgresql</artifactId>
+								</exclude>
+								<exclude>
+									<groupId>com.h2database</groupId>
+									<artifactId>h2</artifactId>
+								</exclude>
+								<exclude>
+									<groupId>com.oracle.database.jdbc</groupId>
+									<artifactId>ojdbc11</artifactId>
+								</exclude>
+								<exclude>
+									<groupId>com.mysql</groupId>
+									<artifactId>mysql-connector-j</artifactId>
+								</exclude>
+								<exclude>
+									<groupId>com.microsoft.sqlserver</groupId>
+									<artifactId>mssql-jdbc</artifactId>
+								</exclude>
+							</excludes>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
 		</profile>
 		<profile>
 			<id>war</id>
@@ -60,6 +141,11 @@
 				<dependency>
 					<groupId>org.springframework.boot</groupId>
 					<artifactId>spring-boot-starter-tomcat</artifactId>
+					<scope>provided</scope>
+				</dependency>
+				<dependency>
+					<groupId>com.h2database</groupId>
+					<artifactId>h2</artifactId>
 					<scope>provided</scope>
 				</dependency>
 			</dependencies>
@@ -172,6 +258,36 @@
 			<artifactId>commons-lang3</artifactId>
 		</dependency>
 
+		<!-- Spring Data JPA: attiva entita'/repository di govpay-common-pendenze in questo contesto -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+
+		<!-- GovPay Common Pendenze: modello ed entita' dell'aggregato pendenza (v3-nativo) -->
+		<dependency>
+			<groupId>org.gov4j.govpay</groupId>
+			<artifactId>govpay-common-pendenze</artifactId>
+			<version>${govpay-common-pendenze.version}</version>
+		</dependency>
+
+		<!--
+			Autenticazione: stessa libreria e stesso schema di govpay-console-api.
+			Un solo metodo abilitato per deployment (govpay.auth.<metodo>.enabled,
+			vedi application.properties) — a differenza di console-api, che ne
+			abilita piu' insieme per popolazioni diverse di utenti, qui dipende
+			dal singolo cliente del Nodo dei Pagamenti.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.gov4j.govpay</groupId>
+			<artifactId>govpay-common-auth</artifactId>
+			<version>${govpay-common-auth.version}</version>
+		</dependency>
+
 		<!-- Integration Test -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -181,6 +297,11 @@
 		<dependency>
 			<groupId>org.springframework.ws</groupId>
 			<artifactId>spring-ws-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
 			<scope>test</scope>
 		</dependency>
 
@@ -194,16 +315,20 @@
 		</resources>
 		<finalName>govpay-pafornode-api</finalName>
 		<plugins>
+			<!-- L'esecuzione "repackage" (fat jar) e le esclusioni dei driver DB restano
+			     nel profilo "jar" (non applicabile al profilo "war", impacchettato da
+			     maven-war-plugin) — stesso schema di govpay-pendenze-api. -->
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
-				<executions>
-					<execution>
-						<goals>
-							<goal>repackage</goal>
-						</goals>
-					</execution>
-				</executions>
+				<configuration>
+					<excludes>
+						<exclude>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok</artifactId>
+						</exclude>
+					</excludes>
+				</configuration>
 			</plugin>
 			<plugin>
 				<artifactId>maven-compiler-plugin</artifactId>

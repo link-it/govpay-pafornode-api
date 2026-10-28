@@ -24,6 +24,8 @@ import it.govpay.common.repository.IntermediarioRepository;
 import it.govpay.common.repository.StazioneRepository;
 import it.govpay.common.repository.UnitaOperativaRepository;
 import it.govpay.pafornode.fault.FaultPa;
+import it.govpay.pafornode.rpt.PaGetPaymentActivationService;
+import it.govpay.pendenze.repository.PagamentoRepository;
 import it.govpay.pendenze.repository.PendenzaRepository;
 
 /**
@@ -49,9 +51,13 @@ class PaForNodeEndpointAutorizzazioneTest {
 	private final StazioneRepository stazioneRepository = mock(StazioneRepository.class);
 	private final UnitaOperativaRepository unitaOperativaRepository = mock(UnitaOperativaRepository.class);
 	private final PendenzaRepository pendenzaRepository = mock(PendenzaRepository.class);
+	private final PagamentoRepository pagamentoRepository = mock(PagamentoRepository.class);
+	private final PaGetPaymentActivationService paGetPaymentActivationService = mock(
+			PaGetPaymentActivationService.class);
 
 	private final PaForNodeEndpoint endpoint = new PaForNodeEndpoint(dominioRepository, intermediarioRepository,
-			stazioneRepository, unitaOperativaRepository, pendenzaRepository, Clock.systemDefaultZone(), List.of());
+			stazioneRepository, unitaOperativaRepository, pendenzaRepository, pagamentoRepository,
+			paGetPaymentActivationService, Clock.systemDefaultZone(), List.of());
 
 	@AfterEach
 	void pulisciContestoSicurezza() {

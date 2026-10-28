@@ -710,17 +710,21 @@ CREATE TABLE IF NOT EXISTS rpt
 	iuv VARCHAR(35) NOT NULL,
 	ccp VARCHAR(35) NOT NULL,
 	cod_dominio VARCHAR(35) NOT NULL,
-	cod_stazione VARCHAR(35),
-	cod_msg_richiesta VARCHAR(35),
+	cod_stazione VARCHAR(35) NOT NULL,
+	cod_msg_richiesta VARCHAR(35) NOT NULL,
 	tipo_versamento VARCHAR(35),
-	stato VARCHAR(35),
+	stato VARCHAR(35) NOT NULL,
 	descrizione_stato TEXT,
 	xml_rt BYTEA,
 	xml_rpt BYTEA,
 	data_msg_ricevuta TIMESTAMP,
-	data_msg_richiesta TIMESTAMP,
+	data_msg_richiesta TIMESTAMP NOT NULL,
+	data_aggiornamento_stato TIMESTAMP NOT NULL,
 	cod_esito_pagamento INT,
 	versione VARCHAR(35) NOT NULL,
+	cod_carrello VARCHAR(35),
+	modello_pagamento VARCHAR(16),
+	cod_transazione_rpt VARCHAR(36),
 	-- fk/pk columns
 	id BIGINT DEFAULT nextval('seq_rpt') NOT NULL,
 	id_versamento BIGINT NOT NULL,
@@ -729,6 +733,27 @@ CREATE TABLE IF NOT EXISTS rpt
 	-- fk/pk keys constraints
 	CONSTRAINT fk_rpt_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
 	CONSTRAINT pk_rpt PRIMARY KEY (id)
+);
+
+CREATE SEQUENCE IF NOT EXISTS seq_notifiche start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
+
+CREATE TABLE IF NOT EXISTS notifiche
+(
+	tipo_esito VARCHAR(16) NOT NULL,
+	data_creazione TIMESTAMP NOT NULL,
+	stato VARCHAR(16) NOT NULL,
+	descrizione_stato VARCHAR(255),
+	data_aggiornamento_stato TIMESTAMP NOT NULL,
+	data_prossima_spedizione TIMESTAMP NOT NULL,
+	tentativi_spedizione BIGINT,
+	-- fk/pk columns
+	id BIGINT DEFAULT nextval('seq_notifiche') NOT NULL,
+	id_applicazione BIGINT NOT NULL,
+	id_rpt BIGINT,
+	-- fk/pk keys constraints
+	CONSTRAINT fk_ntf_id_applicazione FOREIGN KEY (id_applicazione) REFERENCES applicazioni(id),
+	CONSTRAINT fk_ntf_id_rpt FOREIGN KEY (id_rpt) REFERENCES rpt(id),
+	CONSTRAINT pk_notifiche PRIMARY KEY (id)
 );
 
 CREATE SEQUENCE IF NOT EXISTS seq_allegati start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;

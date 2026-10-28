@@ -2,13 +2,21 @@ package it.govpay.pafornode.endpoint;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -21,6 +29,7 @@ import org.springframework.web.client.RestTemplate;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.entity.StazioneEntity;
+import it.govpay.common.entity.TipoContabilita;
 import it.govpay.common.repository.DominioRepository;
 import it.govpay.common.repository.IntermediarioRepository;
 import it.govpay.common.repository.StazioneRepository;
@@ -49,7 +58,26 @@ import it.govpay.common.utils.IuvUtils.IdentificativiPagamento;
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
+@Import(PaForNodeEndpointTest.ClockFissoConfig.class)
 class PaForNodeEndpointTest {
+
+	/**
+	 * Clock fisso: serve solo al test di collisione sulla chiave della RPT (due attivazioni
+	 * con lo stesso {@code ccp}, derivato da {@code clock.millis()}) — innocuo per gli altri
+	 * test di questa classe, nessuno dipende da un orologio che avanza davvero.
+	 */
+	@TestConfiguration
+	static class ClockFissoConfig {
+		// Nome diverso da "clock": Application.clock() resta registrato, @Primary sceglie
+		// comunque questo bean per l'autowiring per tipo — un secondo bean con lo stesso nome
+		// farebbe fallire il contesto (BeanDefinitionOverrideException, non consentito di
+		// default).
+		@Bean
+		@Primary
+		Clock clockFisso() {
+			return Clock.fixed(Instant.now(), ZoneId.systemDefault());
+		}
+	}
 
 	private static final String COD_DOMINIO = "12345678901";
 	private static final String COD_INTERMEDIARIO = "BROKER-TEST";
@@ -152,6 +180,8 @@ class PaForNodeEndpointTest {
 		voce.setIndice(1);
 		voce.setStato(it.govpay.pendenze.model.StatoVocePendenza.NON_ESEGUITO);
 		voce.setIdTributo(1L);
+		voce.setTipoContabilita(TipoContabilita.CAPITOLO);
+		voce.setCodiceContabilita("001");
 		pendenza.addVocePendenza(voce);
 
 		posizioneDebitoriaService.crea(DatiPosizioneDebitoria.da(posizione));
@@ -186,6 +216,27 @@ class PaForNodeEndpointTest {
 				        <noticeNumber>%s</noticeNumber>
 				      </qrCode>
 				    </pafn:paVerifyPaymentNoticeReq>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(idPA, idBrokerPA, idStation, fiscalCode, noticeNumber);
+	}
+
+	private String envelopeGetPayment(String idPA, String idBrokerPA, String idStation, String fiscalCode,
+			String noticeNumber) {
+		return """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paGetPaymentReq>
+				      <idPA>%s</idPA>
+				      <idBrokerPA>%s</idBrokerPA>
+				      <idStation>%s</idStation>
+				      <qrCode>
+				        <fiscalCode>%s</fiscalCode>
+				        <noticeNumber>%s</noticeNumber>
+				      </qrCode>
+				    </pafn:paGetPaymentReq>
 				  </soapenv:Body>
 				</soapenv:Envelope>
 				""".formatted(idPA, idBrokerPA, idStation, fiscalCode, noticeNumber);
@@ -238,5 +289,53 @@ class PaForNodeEndpointTest {
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
+	}
+
+	@Test
+	void paGetPaymentAttivaLaRptERestituisceIDatiDelPagamento() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-getpayment-1", 16.00);
+
+		ResponseEntity<String> risposta = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>",
+				"<creditorReferenceId>" + identificativi.iuv() + "</creditorReferenceId>",
+				"<companyName>Comune di Test</companyName>");
+	}
+
+	@Test
+	void paGetPaymentRestituisceFaultPerPendenzaSconosciuta() {
+		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999998L);
+
+		ResponseEntity<String> risposta = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativiNonUsati.numeroAvviso()));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>",
+				"<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
+	}
+
+	@Test
+	void paGetPaymentSuCollisioneDiChiaveRptRestituisceFaultInveceDiPropagareLerrore() {
+		// Clock fisso (ClockFissoConfig): le due chiamate derivano lo stesso ccp
+		// (System.millis() congelato), quindi la seconda attivazione collide sulla chiave
+		// fisica (iuv, ccp, cod_dominio) con la RPT appena creata dalla prima — anche se
+		// l'annullamento delle RPT pendenti la marca RPT_ANNULLATA, non le libera la chiave.
+		// Prima della correzione, il commit (fuori dal try/catch perché @Transactional stava
+		// sull'endpoint) faceva arrivare l'errore SQL grezzo al chiamante invece della
+		// risposta applicativa KO/PAA_SYSTEM_ERROR.
+		IdentificativiPagamento identificativi = creaPendenza("doc-getpayment-collisione", 16.00);
+		String richiesta = envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
+				identificativi.numeroAvviso());
+
+		ResponseEntity<String> prima = invia(richiesta);
+		assertThat(prima.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(prima.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> seconda = invia(richiesta);
+
+		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(seconda.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_SYSTEM_ERROR</faultCode>");
 	}
 }

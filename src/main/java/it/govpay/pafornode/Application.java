@@ -28,6 +28,8 @@ import it.govpay.common.entity.TipoVersamentoDominioEntity;
 import it.govpay.common.entity.TipoVersamentoEntity;
 import it.govpay.common.entity.TributoEntity;
 import it.govpay.common.entity.UnitaOperativaEntity;
+import it.govpay.pafornode.ricevuta.NotificaAppIo;
+import it.govpay.pafornode.ricevuta.Promemoria;
 import it.govpay.pafornode.security.UtenzaDominioEntity;
 import it.govpay.pafornode.security.UtenzaEntity;
 
@@ -65,11 +67,21 @@ import it.govpay.pafornode.security.UtenzaEntity;
  * per risolvere quale applicazione gestisce un dominio/iuv quando non c'e' ancora una
  * pendenza (§3quinquies del design doc) — per questo elencate anche in
  * {@link #persistenceManagedTypes}.</p>
+ *
+ * <p>{@code it.govpay.pafornode.ricevuta} aggiunto a {@code @EnableJpaRepositories}:
+ * {@code PromemoriaRepository}/{@code NotificaAppIoRepository}, usate da
+ * {@code AcquisizioneRicevutaService} per accodare promemoria/notifiche AppIO
+ * sull'acquisizione di una ricevuta ({@code paSendRT}/{@code paSendRTV2}). Entita'
+ * ({@code Promemoria}/{@code NotificaAppIo}) mappate sulle tabelle legacy {@code
+ * promemoria}/{@code notifiche_app_io} — non condivise con govpay-common-pendenze
+ * (nessun altro consumer di questo servizio ne giustifica la condivisione, §3octies del
+ * design doc), per questo elencate per nome in {@link #persistenceManagedTypes} come le
+ * entity di govpay-common.</p>
  */
 @SpringBootApplication
 @ComponentScan(basePackages = { "it.govpay.pafornode", "it.govpay.pendenze" })
 @EnableJpaRepositories(basePackages = { "it.govpay.pendenze.repository", "it.govpay.common.repository",
-		"it.govpay.pafornode.security" })
+		"it.govpay.pafornode.security", "it.govpay.pafornode.ricevuta" })
 public class Application extends SpringBootServletInitializer {
 
 	@Override
@@ -114,6 +126,8 @@ public class Application extends SpringBootServletInitializer {
 		nomiClassi.add(IbanAccreditoEntity.class.getName());
 		nomiClassi.add(UtenzaEntity.class.getName());
 		nomiClassi.add(UtenzaDominioEntity.class.getName());
+		nomiClassi.add(Promemoria.class.getName());
+		nomiClassi.add(NotificaAppIo.class.getName());
 
 		return PersistenceManagedTypes.of(nomiClassi, List.of("it.govpay.pendenze.entity"));
 	}

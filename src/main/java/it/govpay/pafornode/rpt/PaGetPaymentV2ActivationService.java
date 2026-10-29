@@ -148,8 +148,10 @@ public class PaGetPaymentV2ActivationService {
 		PendenzaVerificata risposta = verificaClient.getAvviso(codConnettoreVerifica, dominio.getCodDominio(),
 				numeroAvviso);
 		PendenzaVerificataMapper.verificaEsito(risposta, codDominio);
+		PendenzaVerificataMapper.verificaIdentita(risposta.getPendenza(), dominio.getCodDominio(), numeroAvviso,
+				codDominio);
 		DatiPosizioneDebitoria comando = pendenzaVerificataMapper.creaDatiPosizioneDebitoria(risposta.getPendenza(),
-				applicazione.getId(), dominio.getId());
+				applicazione.getId(), dominio.getId(), numeroAvviso);
 		PosizioneDebitoria creata = posizioneDebitoriaService.crea(comando);
 		return creata.getOpzioniPagamento().get(0).getPendenze().get(0);
 	}

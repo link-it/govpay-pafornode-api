@@ -13,6 +13,10 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTReq;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTRes;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Request;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Response;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtFaultBean;
@@ -23,16 +27,18 @@ import it.govpay.pafornode.rpt.PaGetPaymentActivationService;
 import it.govpay.pafornode.rpt.PaGetPaymentV2ActivationService;
 
 /**
- * Implementa {@code paVerifyPaymentNotice}, {@code paGetPayment} e {@code paGetPaymentV2}
- * del contratto paForNode. Analisi completa del legacy ({@code PagamentiTelematiciCCPImpl})
- * nel design doc (§1/§3/§3ter/§3quinquies/§3septies). Puramente di smistamento: l'intera
- * logica (inclusa l'attualizzazione — SEND/riacquisizione/acquisizione, §3quinquies, tutti e
- * tre i rami cablati su tutte e tre le operazioni) vive nei rispettivi servizi
+ * Implementa {@code paVerifyPaymentNotice}, {@code paGetPayment}, {@code paGetPaymentV2},
+ * {@code paSendRT} e {@code paSendRTV2} del contratto paForNode. Analisi completa del
+ * legacy ({@code PagamentiTelematiciCCPImpl}) nel design doc (§1/§3/§3ter/§3quinquies/
+ * §3septies/§3octies). Puramente di smistamento: l'intera logica (inclusa
+ * l'attualizzazione — SEND/riacquisizione/acquisizione, §3quinquies, tutti e tre i rami
+ * cablati su tutte le operazioni di attivazione/verifica) vive nei rispettivi servizi
  * transazionali ({@link PaVerifyPaymentNoticeService}/{@link PaGetPaymentActivationService}/
- * {@link PaGetPaymentV2ActivationService}), non qui — nessuno dei tre metodi e' transazionale:
- * se lo fosse, il commit avverrebbe DOPO il ritorno del metodo (quindi dopo il try/catch), e
- * un errore al commit scapperebbe alla costruzione della risposta applicativa KO, arrivando
- * al chiamante come HTTP 500/SOAP Fault grezzo invece che come {@code PAA_SYSTEM_ERROR}.
+ * {@link PaGetPaymentV2ActivationService}/{@link PaSendRTService}), non qui — nessuno dei
+ * cinque metodi e' transazionale: se lo fosse, il commit avverrebbe DOPO il ritorno del
+ * metodo (quindi dopo il try/catch), e un errore al commit scapperebbe alla costruzione
+ * della risposta applicativa KO, arrivando al chiamante come HTTP 500/SOAP Fault grezzo
+ * invece che come {@code PAA_SYSTEM_ERROR}.
  */
 @Endpoint
 public class PaForNodeEndpoint {
@@ -42,14 +48,16 @@ public class PaForNodeEndpoint {
 	private final PaVerifyPaymentNoticeService paVerifyPaymentNoticeService;
 	private final PaGetPaymentActivationService paGetPaymentActivationService;
 	private final PaGetPaymentV2ActivationService paGetPaymentV2ActivationService;
+	private final PaSendRTService paSendRTService;
 	private final ObjectFactory objectFactory = new ObjectFactory();
 
 	public PaForNodeEndpoint(PaVerifyPaymentNoticeService paVerifyPaymentNoticeService,
 			PaGetPaymentActivationService paGetPaymentActivationService,
-			PaGetPaymentV2ActivationService paGetPaymentV2ActivationService) {
+			PaGetPaymentV2ActivationService paGetPaymentV2ActivationService, PaSendRTService paSendRTService) {
 		this.paVerifyPaymentNoticeService = paVerifyPaymentNoticeService;
 		this.paGetPaymentActivationService = paGetPaymentActivationService;
 		this.paGetPaymentV2ActivationService = paGetPaymentV2ActivationService;
+		this.paSendRTService = paSendRTService;
 	}
 
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paVerifyPaymentNoticeReq")
@@ -135,6 +143,67 @@ public class PaForNodeEndpoint {
 
 	private static PaGetPaymentV2Response buildFaultGetPaymentV2(NdpException e) {
 		PaGetPaymentV2Response response = new PaGetPaymentV2Response();
+		response.setOutcome(StOutcome.KO);
+		CtFaultBean fault = new CtFaultBean();
+		fault.setId(e.getCodDominio());
+		fault.setFaultCode(e.getFault().name());
+		fault.setFaultString(e.getFault().getFaultString());
+		fault.setDescription(e.getDescrizione());
+		response.setFault(fault);
+		return response;
+	}
+
+	/**
+	 * Stessa struttura delle altre quattro operazioni: non transazionale, l'intera
+	 * acquisizione della ricevuta e' dentro {@link PaSendRTService}. A differenza di
+	 * {@code paVerifyPaymentNotice}/{@code paGetPayment}, IUV e dominio si leggono
+	 * direttamente da {@code CtReceipt}, non da un {@code CtQrCode}.
+	 */
+	@PayloadRoot(namespace = NAMESPACE, localPart = "paSendRTReq")
+	@ResponsePayload
+	public JAXBElement<PaSendRTRes> paSendRT(@RequestPayload PaSendRTReq request) {
+		String codDominio = request.getReceipt().getFiscalCode();
+		PaSendRTRes response;
+		try {
+			response = paSendRTService.eseguiSendRT(request);
+		} catch (NdpException e) {
+			response = buildFaultSendRT(e);
+		} catch (RuntimeException e) {
+			response = buildFaultSendRT(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
+		}
+		return objectFactory.createPaSendRTRes(response);
+	}
+
+	private static PaSendRTRes buildFaultSendRT(NdpException e) {
+		PaSendRTRes response = new PaSendRTRes();
+		response.setOutcome(StOutcome.KO);
+		CtFaultBean fault = new CtFaultBean();
+		fault.setId(e.getCodDominio());
+		fault.setFaultCode(e.getFault().name());
+		fault.setFaultString(e.getFault().getFaultString());
+		fault.setDescription(e.getDescrizione());
+		response.setFault(fault);
+		return response;
+	}
+
+	/** Come {@link #paSendRT}, per {@code paSendRTV2}. */
+	@PayloadRoot(namespace = NAMESPACE, localPart = "paSendRTV2Request")
+	@ResponsePayload
+	public JAXBElement<PaSendRTV2Response> paSendRTV2(@RequestPayload PaSendRTV2Request request) {
+		String codDominio = request.getReceipt().getFiscalCode();
+		PaSendRTV2Response response;
+		try {
+			response = paSendRTService.eseguiSendRTV2(request);
+		} catch (NdpException e) {
+			response = buildFaultSendRTV2(e);
+		} catch (RuntimeException e) {
+			response = buildFaultSendRTV2(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
+		}
+		return objectFactory.createPaSendRTV2Response(response);
+	}
+
+	private static PaSendRTV2Response buildFaultSendRTV2(NdpException e) {
+		PaSendRTV2Response response = new PaSendRTV2Response();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
 		fault.setId(e.getCodDominio());

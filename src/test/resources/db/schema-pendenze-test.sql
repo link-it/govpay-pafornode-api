@@ -757,6 +757,71 @@ CREATE TABLE IF NOT EXISTS notifiche
 	CONSTRAINT pk_notifiche PRIMARY KEY (id)
 );
 
+-- ---------------------------------------------------------------------------
+-- Promemoria/notifiche AppIO: code di spedizione per l'acquisizione RT
+-- (AcquisizioneRicevutaService, govpay-common-pendenze), stesso principio di
+-- "notifiche" sopra (solo accodamento, niente spedizione reale qui).
+-- ---------------------------------------------------------------------------
+
+CREATE SEQUENCE IF NOT EXISTS seq_promemoria start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
+
+CREATE TABLE IF NOT EXISTS promemoria
+(
+	tipo VARCHAR(16) NOT NULL,
+	data_creazione TIMESTAMP NOT NULL,
+	stato VARCHAR(16) NOT NULL,
+	descrizione_stato VARCHAR(1024),
+	destinatario_to VARCHAR(256) NOT NULL,
+	destinatario_cc VARCHAR(256),
+	messaggio_content_type VARCHAR(256),
+	oggetto VARCHAR(512),
+	messaggio TEXT,
+	allega_pdf BOOLEAN NOT NULL DEFAULT false,
+	data_aggiornamento_stato TIMESTAMP NOT NULL,
+	data_prossima_spedizione TIMESTAMP NOT NULL,
+	tentativi_spedizione BIGINT,
+	-- fk/pk columns
+	id BIGINT DEFAULT nextval('seq_promemoria') NOT NULL,
+	id_versamento BIGINT,
+	id_rpt BIGINT,
+	id_documento BIGINT,
+	-- fk/pk keys constraints
+	CONSTRAINT fk_prm_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
+	CONSTRAINT fk_prm_id_rpt FOREIGN KEY (id_rpt) REFERENCES rpt(id),
+	CONSTRAINT fk_prm_id_documento FOREIGN KEY (id_documento) REFERENCES documenti(id),
+	CONSTRAINT pk_promemoria PRIMARY KEY (id)
+);
+
+CREATE SEQUENCE IF NOT EXISTS seq_notifiche_app_io start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
+
+CREATE TABLE IF NOT EXISTS notifiche_app_io
+(
+	debitore_identificativo VARCHAR(35) NOT NULL,
+	cod_versamento_ente VARCHAR(35) NOT NULL,
+	cod_applicazione VARCHAR(35) NOT NULL,
+	cod_dominio VARCHAR(35) NOT NULL,
+	iuv VARCHAR(35) NOT NULL,
+	tipo_esito VARCHAR(16) NOT NULL,
+	data_creazione TIMESTAMP NOT NULL,
+	stato VARCHAR(16) NOT NULL,
+	descrizione_stato VARCHAR(255),
+	data_aggiornamento_stato TIMESTAMP NOT NULL,
+	data_prossima_spedizione TIMESTAMP NOT NULL,
+	tentativi_spedizione BIGINT,
+	id_messaggio VARCHAR(255),
+	stato_messaggio VARCHAR(16),
+	-- fk/pk columns
+	id BIGINT DEFAULT nextval('seq_notifiche_app_io') NOT NULL,
+	id_versamento BIGINT NOT NULL,
+	id_tipo_versamento_dominio BIGINT NOT NULL,
+	id_rpt BIGINT,
+	-- fk/pk keys constraints
+	CONSTRAINT fk_nai_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
+	CONSTRAINT fk_nai_id_tipo_versamento_dominio FOREIGN KEY (id_tipo_versamento_dominio) REFERENCES tipi_vers_domini(id),
+	CONSTRAINT fk_nai_id_rpt FOREIGN KEY (id_rpt) REFERENCES rpt(id),
+	CONSTRAINT pk_notifiche_app_io PRIMARY KEY (id)
+);
+
 CREATE SEQUENCE IF NOT EXISTS seq_allegati start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
 
 -- nome/tipo/descrizione/data_creazione sono mappati (lettura e scrittura) da AllegatoEntity

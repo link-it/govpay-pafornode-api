@@ -32,11 +32,8 @@ con validità scaduta) e acquisizione (pendenza DEL TUTTO ASSENTE, punto aperto 
 ora implementati e cablati su `paGetPayment` (`SendClient`/`VerificaClient`/
 `PendenzaVerificataMapper`/`ApplicazioneDominioResolver`/`AttualizzazionePendenzaService`).
 **`paGetPayment` (V1) è quindi completo per tutti i casi analizzati**, salvo: il punto aperto
-#9 (nessuno dei tre rami ancora cablato su `paVerifyPaymentNotice`, che resta
-`@Transactional(readOnly = true)` — spostato in fondo ai lavori dell'issue, non blocca più
-`paGetPaymentV2`), il punto aperto #11 (spedizione effettiva della notifica di attivazione —
-resta solo accodamento), e il punto aperto #1 (autenticazione X.509, infrastruttura/
-deployment, fuori scope applicativo).
+#11 (spedizione effettiva della notifica di attivazione — resta solo accodamento), e il
+punto aperto #1 (autenticazione X.509, infrastruttura/deployment, fuori scope applicativo).
 
 **`paGetPaymentV2` implementato** (§3septies, 2026-10-29): stessa infrastruttura di
 `paGetPayment` (riusata senza modifiche), nuovo `CtPaymentPaV2Builder`/
@@ -44,6 +41,26 @@ deployment, fuori scope applicativo).
 (mappatura su `DettaglioContabile`, chiavi `RC_*` del Dizionario dei metadata pagoPA —
 punto #12 risolto). Resta solo il punto aperto #13 (rischio NPE non corretto su una voce di
 bollo senza contabilità propria).
+
+**`paVerifyPaymentNotice` cablato con l'attualizzazione completa** (punto aperto #9,
+risolto 2026-10-29): estratta l'intera logica in `PaVerifyPaymentNoticeService`
+(`@Transactional` scrivente, non più read-only), tutti e tre i rami dell'attualizzazione
+(SEND/riacquisizione/acquisizione pendenza assente) ora cablati anche qui, non solo su
+`paGetPayment`/`paGetPaymentV2`. `PaForNodeEndpoint` è ora puro smistamento per tutte e tre
+le operazioni (nessuna logica propria, nessun metodo transazionale). 77/77 test verdi.
+
+**`paSendRT`/`paSendRTV2` implementati** (§3octies, 2026-10-29): acquisizione di una
+ricevuta di pagamento (RT) su una RPT già attivata — percorso principale (RPT trovata,
+ricevuta valida). `AcquisizioneRicevutaService` (logica di scrittura sull'aggregato
+pendenza/RPT/pagamento) nata in govpay-common-pendenze, **spostata qui** (§3decies,
+2026-10-29, decisione del committente): pafornode-api è l'unico punto da cui GovPay
+acquisisce ricevute pagoPA, nessun secondo consumer ne giustifica più la condivisione.
+`PaSendRTService` per i controlli/dati specifici del contratto paForNode (autorizzazione,
+ricerca/lock RPT, deserializzazione del payload originale, validazione semantica
+semplificata). Punti aperti: ricostruzione "standin" (RPT mai attivata da GovPay) e
+validazione semantica completa (incluso il caso ibrido RPTV2_RTV1) non implementate —
+vedi punto aperto #14. 218/218 test verdi in govpay-common-pendenze, 110/110 in
+govpay-pafornode-api.
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -312,11 +329,10 @@ condivide la stessa logica in `CtPaymentPAV2Builder`).
     comunque già pronto per questo caso (converte una `NuovaPendenza` in dati di pendenza);
     manca solo la risoluzione dell'applicazione e la creazione (vs. aggiornamento) della
     `PosizioneDebitoria`.
-  - Non ancora cablato su `paVerifyPaymentNotice`: quell'operazione resta
-    `@Transactional(readOnly = true)` nell'endpoint, e scrivere (SEND o riacquisizione) da
-    una transazione read-only è a rischio di fallire in produzione (connessione JDBC in
-    sola lettura su PostgreSQL) — richiede prima la stessa estrazione in un servizio
-    scrivente non read-only già applicata a `paGetPayment`. Non ancora fatto.
+  - ~~Non ancora cablato su `paVerifyPaymentNotice`~~ — **risolto** (2026-10-29, punto
+    aperto #9): estratto in `PaVerifyPaymentNoticeService`, `@Transactional` scrivente,
+    stesso principio di `PaGetPaymentActivationService`. Tutti e tre i rami ora cablati
+    anche qui.
 - Correzione collaterale (**fatta**): `paVerifyPaymentNotice` non includeva le spese SEND
   nell'`amount` della risposta (`VersamentoUtils.getImportoTotaleConSend` del legacy, §1
   punto 8) — mancava indipendentemente dall'attualizzazione, perché è una pura lettura di
@@ -374,10 +390,10 @@ frammenti già analizzati) e confrontato punto per punto con l'implementazione a
   più avanti, sulla sola fase di insert RPT) — induriemento aggiunto in questa generazione,
   non una lacuna.
 
-**Non implementato** (sapevamo già, confermato qui non essere sfuggito nient'altro):
-acquisizione di una pendenza DEL TUTTO ASSENTE (punto aperto #10); attualizzazione non
-cablata su `paVerifyPaymentNotice` (punto aperto #9); infrastruttura di autenticazione X.509
-(punto aperto #1, questione di deployment, non di codice applicativo).
+**Non implementato all'epoca di questa verifica** (punti aperti #9/#10, risolti entrambi
+successivamente, vedi §4): acquisizione di una pendenza DEL TUTTO ASSENTE; attualizzazione
+non cablata su `paVerifyPaymentNotice`. Resta fuori scope applicativo l'infrastruttura di
+autenticazione X.509 (punto aperto #1, questione di deployment, non di codice).
 
 ## 3septies. `paGetPaymentV2` (implementato, 2026-10-29)
 
@@ -444,6 +460,219 @@ fallback tipo bollo, quota SEND+metadata) e due nuovi test di integrazione SOAP 
 `PaForNodeEndpointTest` (attivazione con successo verificando anche `versione=SANP_321_V2`
 sulla riga RPT, fault per pendenza sconosciuta). 73/73 test verdi in tutto il modulo.
 
+## 3octies. `paSendRT`/`paSendRTV2` (implementati, percorso principale, 2026-10-29)
+
+Letto `PagamentiTelematiciCCPImpl.paSendRT`/`paSendRTV2` (righe 260-424/1142-1282) e
+`CtReceiptUtils.acquisisciRT`/`RtUtils` (`jars/core/.../utils/CtReceiptUtils.java`,
+~350 righe; `RtUtils.java`, promemoria/AppIO/stato versamento). Acquisisce una ricevuta
+di pagamento (RT) su una RPT già attivata da `paGetPayment`/`paGetPaymentV2`.
+
+**Collocazione della logica di scrittura — decisione iniziale, superata (vedi §3decies)**:
+la creazione/aggiornamento di `Pagamento`/`Rpt` e il calcolo del nuovo stato pendenza
+(`AcquisizioneRicevutaService`, nuovo) sono nati in **govpay-common-pendenze**, non in
+questo repository — criterio: "può essere utile a qualcun altro?" Sì: il legacy stesso
+ha un parametro `recupero` che distingue l'origine della chiamata (diretta vs. un
+meccanismo di recupero/cruscotto), stessa logica di business in entrambi i casi. Non
+dipende dai tipi JAXB del contratto paForNode (a differenza di
+`RicostruttoreRichiestaPagamento`, che li usa per un motivo diverso): il chiamante
+estrae già i valori grezzi in `DatiRicevutaPagamento` — stesso principio
+generico-con-booleani-già-risolti di `AutorizzazioneDominio.autorizzato` in
+govpay-common-auth. **Spostato in questo repository il 2026-10-29, vedi §3decies.**
+
+**Esito binario**: a differenza del vecchio SANP_230, il contratto paForNode riporta solo
+`StOutcome` OK/KO. Verificato che `RtUtils#impostaNuovoStatoVersamento` per un esito
+`PAGAMENTO_NON_ESEGUITO` non modifica affatto lo stato della pendenza — per KO
+`AcquisizioneRicevutaService` aggiorna comunque la RPT ma non crea `Pagamento` né righe
+di avvisatura.
+
+**Promemoria/notifiche AppIO — solo accodamento**: nuove entità `Promemoria`/
+`NotificaAppIo` (tabelle legacy reali `promemoria`/`notifiche_app_io`, riuso diretto —
+spostate con `AcquisizioneRicevutaService`, §3decies). Scoperto analizzando il legacy: l'invio reale
+(SMTP per i promemoria, HTTP per AppIO) è un **batch separato** che consuma una coda
+(`stato=DA_SPEDIRE`) — `core.business.Promemoria#invioPromemoria*`/
+`core.business.NotificaAppIo#findNotificheDaSpedire` nel monolite — non qualcosa che
+l'acquisizione della ricevuta deve fare, stesso principio già noto di
+`NotificaAttivazioneService` ("solo accodamento"). `oggetto`/`messaggio` del promemoria
+restano `NULL` qui: il legacy li valorizza a SPEDIZIONE (motore di template), non
+all'accodamento. Abilitazione/PDF risolti con fallback override-per-dominio → default
+globale, già pronto su `TipoVersamentoDominioEntity`/`TipoVersamentoEntity`
+(`AbstractTipoVersamento`, issue govpay-common#9) — **nessuna modifica a govpay-common
+necessaria** (verificato prima di proporlo, correggendo un'ipotesi iniziale sbagliata).
+
+**`PaSendRTService`**: controlli di autorizzazione
+(stesso schema di `PaVerifyPaymentNoticeService`, IUV/dominio letti direttamente da
+`CtReceipt.getCreditorReferenceId()`/`getFiscalCode()`, non da un `CtQrCode`), ricerca e
+lock della RPT in attesa di ricevuta (nuovo `RptRepository#findByIdVersamentoAndStato`),
+idempotenza su `receiptId` (`PAA_RECEIPT_DUPLICATA` se già acquisita), deserializzazione
+del payload originale (`RptAttivazioneService#deserializzaDati`/`V2`, già esistente),
+validazione semantica (qui perché dipende dai tipi JAXB della richiesta originale).
+
+**Punto aperto nuovo**:
+14. **Ricostruzione "standin" e validazione semantica completa non implementate**
+    (`paSendRT`/`paSendRTV2`, 2026-10-29): il legacy, se non trova un'RPT per
+    dominio/iuv, ricostruisce una entry minimale (`CtReceiptUtils.ricostruisciRPT`) per
+    il caso "pagamento attivato dal Nodo senza una nostra RPT salvata" — qui una RPT non
+    trovata è sempre `PAA_RPT_SCONOSCIUTA`, nessuna ricostruzione. La validazione
+    semantica RT-contro-RPT implementata è semplificata ai due controlli "fatali" del
+    legacy (`creditorReferenceId`, coerenza del numero di trasferimenti) — non l'intero
+    confronto campo per campo, né il caso ibrido `RPTV2_RTV1` (RPT attivata in un
+    formato, RT arrivata nell'altro). Nessuna persistenza separata dello stato
+    `RT_RIFIUTATA_PA` quando la validazione semantica fallisce (il legacy la commit a
+    parte prima di rilanciare il fault; qui l'intera transazione viene scartata col
+    fault). Casi di minoranza, non il percorso principale.
+
+**Test**: `AcquisizioneRicevutaServiceTest` (esito OK crea pagamento/esegue la
+pendenza/accoda avvisatura, esito KO nessun side-effect, avvisatura disabilitata, voce
+già eseguita→anomalo, attivazione opzione+annullamento alternative), `PaSendRTServiceTest`
+(rifiuti precoci: intermediario/stazione/pendenza/RPT sconosciuti, receipt duplicata), due
+test di integrazione SOAP in `PaForNodeEndpointTest` (attivazione+acquisizione RT a lieto
+fine con verifica DB, fault per RPT sconosciuta). Conteggi aggiornati al §3decies (dopo lo
+spostamento) e §3nonies (dopo le correzioni di revisione).
+
+## 3nonies. Correzioni da revisione (2026-10-29)
+
+Sette difetti emersi da una revisione del codice, tutti riprodotti con test prima della
+correzione.
+
+1. **RT non riallineava l'opzione di pagamento** (`AcquisizioneRicevutaService`): l'esito
+   OK scriveva `pendenza.stato = ESEGUITO` direttamente, senza passare per
+   `PosizioneDebitoriaService#registraEsitoPendenza` — l'opzione restava `DISPONIBILE` e
+   le alternative restavano pagabili dopo un pagamento reale. Corretto delegando a quel
+   metodo (nuova dipendenza, stesso modulo): attiva l'opzione e annulla automaticamente le
+   alternative, con le stesse garanzie di congruenza/concorrenza di qualunque altro esito.
+
+2. **La pendenza (ri)acquisita non veniva confrontata con l'avviso richiesto**
+   (`PendenzaVerificataMapper`, usato da `paGetPayment`/`V2`/`paVerifyPaymentNotice` per
+   l'acquisizione di una pendenza assente e da `AttualizzazionePendenzaService` per la
+   riacquisizione): il contratto EC porta `idDominio` (obbligatorio) e `numeroAvviso`
+   (opzionale) nella risposta del gestionale, mai verificati contro quanto richiesto — una
+   risposta scorrelata (altro avviso/dominio) veniva acquisita come se fosse quella
+   giusta; un NAV assente generava un numero avviso nuovo, scorrelato da quello in mano al
+   pagatore. Aggiunto `PendenzaVerificataMapper#verificaIdentita` (fault
+   `PAA_PAGAMENTO_SCONOSCIUTO` su mismatch), richiamato in tutti e 4 i punti subito dopo
+   `verificaEsito`; per la creazione, un NAV assente viene completato con quello
+   richiesto invece di lasciarne generare uno nuovo.
+
+3. **Le date di scadenza/validità (sempre scritte a mezzanotte dal mapper) erano
+   confrontate con l'istante corrente**, non con il giorno: una scadenza odierna veniva
+   già rifiutata durante la giornata (`PaForNodeChecks#verificaStatoPagabile`), e una
+   validità odierna innescava già l'attualizzazione (`AttualizzazionePendenzaService`) —
+   il legacy mantiene valido l'intero giorno. Corretto confrontando per giorno
+   (`LocalDate`), non per istante, in entrambi i punti.
+
+4. **`govpay.pafornode.attualizzazione.mandatoria=false` non manteneva il fallback del
+   legacy** — corretto in due passaggi, il secondo dopo una revisione del primo che
+   copriva solo gli errori di trasporto. `AttualizzazionePendenzaService#riacquisisci`
+   (ramo verifica) ora restituisce `boolean` ("riuscita?") invece di propagare qualunque
+   eccezione: `false` per connettore non raggiungibile (`RestClientException`), risposta
+   `SCONOSCIUTA` (l'ente non ha risolto l'avviso, non un esito), identità non
+   corrispondente (`PendenzaVerificataMapper#verificaIdentita`, stesso principio — un dato
+   non utilizzabile, non un esito) o risposta non mappabile
+   (`IllegalStateException` da `toAggiornamentoPendenza`); `true` solo a persistenza
+   riuscita. **Restano bloccanti SEMPRE**, indipendentemente dal flag:
+   `ANNULLATA`/`SCADUTA` (esiti definitivi del pagamento, non un'incertezza recuperabile
+   con i dati esistenti) ed eventuali errori della scrittura finale
+   (`PosizioneDebitoriaService#aggiornaPendenza`, mai catturata insieme al recupero/
+   mappatura della risposta — un errore di persistenza è un problema reale, non
+   un'indisponibilità dell'ente). Il ramo SEND (`attualizzaSend`) già catturava
+   correttamente solo `RestClientException`, per tipo: non serviva questa ristrutturazione.
+   `false` o fault mancato → gestiti da un controllo dedicato, non solo da quello di fondo
+   a `attualizza`. Nessuna scrittura avviene prima della chiamata HTTP/della mappatura,
+   quindi nessun rollback parziale da gestire. Riprodotto con test (incl. il caso
+   segnalato in revisione, risposta `SCONOSCIUTA`, prima ancora bloccante
+   indipendentemente dal flag).
+
+   **Correzione successiva (stessa revisione)**: il controllo `!attualizzata &&
+   attualizzazioneMandatoria` SOLO di fondo a `attualizza` permetteva a un esito positivo
+   di SEND di mascherare il fallimento della Verifica mandatoria — connettore di verifica
+   configurato (quindi tentato) e fallito (`riacquisisci` → `false`) con
+   `attualizzazioneMandatoria=true`, ma SEND riusciva dopo e rimetteva `attualizzata` a
+   `true`, nascondendo il fallimento. Il legacy interrompe il flusso al fallimento della
+   Verifica obbligatoria, non lo fa dipendere da SEND. Corretto controllando l'esito della
+   Verifica (quando il suo connettore e' configurato) PRIMA di procedere a SEND, non dopo
+   — un fallimento mandatorio interrompe qui, senza nemmeno tentare SEND. Il percorso
+   solo-SEND (nessun connettore di verifica configurato) resta consentito, non c'e' nulla
+   da aver fallito in quel caso. Riprodotto con test (Verifica SCONOSCIUTA + mandatoria +
+   SEND che altrimenti riuscirebbe → fault, nessuna interazione con `sendClient`).
+
+5. **L'attualizzazione precedeva controlli che nel legacy la impedivano**
+   (`AttualizzazionePendenzaService#attualizza`): veniva tentata anche su pendenze non più
+   `NON_ESEGUITO` (chiamate inutili all'ente) e prima di verificare la scadenza
+   dell'avviso (una risposta dell'ente poteva prorogare una pendenza già scaduta prima che
+   il controllo la rifiutasse). Corretto aggiungendo entrambe le esclusioni in testa al
+   metodo, nello stesso ordine del legacy.
+
+6. **Il mapper rifiutava le voci con IBAN esplicito e perdeva la tassonomia**
+   (`PendenzaVerificataMapper#toDatiVocePendenza`): accettava solo bollo o codEntrata,
+   motivando l'esclusione dell'IBAN diretto con l'assenza del campo sul contratto — non
+   corretto, il contratto EC porta `ibanAccredito`/`ibanAppoggio`/
+   `codiceTassonomicoPagoPA` (ereditati dal tipo base generato con discriminatore). Aggiunto
+   il terzo ramo (risoluzione via `IbanAccreditoRepository`, già in govpay-common, stesso
+   principio di `NuovaPendenzaMapper` del wrapper v2) e la tassonomia anche sul ramo bollo.
+
+7. **La notifica AppIO usava la sentinella al posto del codice fiscale**
+   (`AcquisizioneRicevutaService#accodaAvvisatura`): leggeva
+   `pendenza.getDebitoreIdentificativo()`, che sulle pendenze v3-native contiene sempre
+   `VEDERE_SOGGETTI_DEBITORI` (campo denormalizzato, mai sincronizzato). Corretto
+   risolvendo il debitore principale da `soggettiDebitori` (stesso helper già usato per
+   l'email del promemoria).
+
+## 3decies. Spostamento di `AcquisizioneRicevutaService` in pafornode-api (2026-10-29)
+
+**Decisione del committente**: tutte le ricevute pagoPA vengono acquisite esclusivamente
+tramite questo servizio (`paSendRT`/`paSendRTV2`) — nessun secondo consumer (es. un
+recupero RT via cruscotto) è previsto o pianificato. Il criterio originale ("può essere
+utile a qualcun altro?", §3octies) non si applica più: la logica di scrittura
+sull'aggregato pendenza/RPT/pagamento e i controlli applicativi della stessa primitiva
+sono stati riuniti nello stesso modulo.
+
+**Spostati da govpay-common-pendenze a govpay-pafornode-api** (nuovo package
+`it.govpay.pafornode.ricevuta`, flat — stesso stile di `it.govpay.pafornode.security`,
+nessuna sotto-struttura `entity`/`repository`): `AcquisizioneRicevutaService`,
+`DatiRicevutaPagamento`, le entità `Promemoria`/`NotificaAppIo` (tabelle legacy reali,
+invariate) con i rispettivi repository e i quattro enum di stato/tipo. Rimossi gli
+equivalenti da govpay-common-pendenze, incluse le due tabelle dal suo schema di test
+(mai più referenziate da nessuna entity di quel modulo).
+
+**Cosa NON si è spostato, e perché**: `RicostruttoreRichiestaPagamento`/`JaxbUtils`
+(govpay-common-pendenze) — nonostante il nome simile e la vicinanza concettuale, questa
+classe è davvero condivisa: usata anche da govpay-pendenze-api
+(`RichiestaPagamentoV1Mapper`/`RppContenutoMapper`, wrapper v2) e da
+`RicevutaRendicontazioneService` nello stesso modulo. Nessun cambiamento a questa classe
+né alle sue dipendenze (govpay-common-pendenze continua a generare/dipendere dai tipi
+JAXB del contratto paForNode per questo motivo, indipendentemente dallo spostamento di
+`AcquisizioneRicevutaService`).
+
+**Wiring**: `Application` (pafornode-api) aggiornato — `it.govpay.pafornode.ricevuta`
+aggiunto a `@EnableJpaRepositories`; `Promemoria`/`NotificaAppIo` elencate per nome in
+`persistenceManagedTypes` (come le entità di govpay-common, non scoperte dinamicamente
+come quelle di `it.govpay.pendenze.entity`). Nessuna dipendenza nuova tra i due moduli:
+`AcquisizioneRicevutaService` continua a dipendere da `PosizioneDebitoriaService`
+(govpay-common-pendenze), dipendenza già esistente nella direzione pafornode-api →
+common-pendenze.
+
+**Gotcha di test incontrato**: uno slice `@DataJpaTest` (usato quando questa classe
+viveva in govpay-common-pendenze, libreria senza un proprio `@SpringBootApplication`)
+non funziona in questo modulo — `Application` ha già il proprio `@EntityScan`/
+`@EnableJpaRepositories`, che un secondo set di annotazioni dello slice duplica
+causando `BeanDefinitionOverrideException` all'avvio del contesto. Risolto riscrivendo
+il test come `@SpringBootTest` (come `PaForNodeEndpointTest`) con `@Transactional` di
+classe per il rollback automatico, `EntityManager` diretto al posto di
+`TestEntityManager`. `webEnvironment` di default (MOCK), non `NONE`: la catena di
+sicurezza di govpay-common-auth richiede un `HttpSecurity`/`WebApplicationContext` per
+costruire il proprio filtro, assente con `NONE`. Scoperto anche, indipendentemente da
+questo spostamento: `Application` scansiona `it.govpay.pafornode` per intero, che a
+runtime include le classi di test compilate nello stesso albero di package — due
+`@TestConfiguration` con lo stesso nome di `@Bean` (qui, un secondo `Clock` fisso
+`@Primary` con lo stesso nome di quello di `PaForNodeEndpointTest`) si sommano invece di
+restare isolati l'uno dall'altro, facendo fallire l'avvio con bean duplicati o ambigui —
+evitato non duplicando il bean (nessun `Clock` fisso serve a questi test, nessuna
+asserzione confronta un istante generato internamente dal servizio).
+
+**Test**: stessi `AcquisizioneRicevutaServiceTest` (5 test) e `PaSendRTServiceTest`,
+entrambi ora in `it.govpay.pafornode.ricevuta`/`.endpoint`. 218/218 test verdi in
+govpay-common-pendenze (-5, test spostato), 105/105 in govpay-pafornode-api (+5).
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -476,11 +705,18 @@ sulla riga RPT, fault per pendenza sconosciuta). 73/73 test verdi in tutto il mo
    persi dal generatore, vedi §3bis). Riacquisizione implementata per la pendenza TROVATA ma
    con validità scaduta; resta aperta solo l'acquisizione della pendenza DEL TUTTO ASSENTE
    (punto 10 sotto).
-9. **Attualizzazione (SEND e riacquisizione) non cablata su `paVerifyPaymentNotice`**
-   (§3quinquies, 2026-10-29): quell'operazione resta `@Transactional(readOnly = true)`;
-   scrivere da lì (SEND o riacquisizione, entrambe ora implementate per `paGetPayment`)
-   richiede prima la stessa estrazione in un servizio scrivente non read-only già applicata a
-   `paGetPayment`. Non ancora deciso se farlo prima o dopo `paGetPaymentV2`.
+9. ~~Attualizzazione (SEND e riacquisizione) non cablata su `paVerifyPaymentNotice`~~ —
+   **risolto** (2026-10-29): estratta l'intera logica (verifica + attualizzazione) in
+   `PaVerifyPaymentNoticeService`, nuovo servizio `@Transactional` (non read-only), stesso
+   principio di `PaGetPaymentActivationService`/`PaGetPaymentV2ActivationService`. Tutti e
+   tre i rami dell'attualizzazione (SEND, riacquisizione, acquisizione pendenza assente —
+   quest'ultima con la propria `acquisisciPendenzaAssente` locale, stessa logica della
+   controparte in `PaGetPaymentActivationService`) sono ora cablati anche qui.
+   `PaForNodeEndpoint.paVerifyPaymentNotice` si limita a smistare (nessuna logica propria,
+   non più transazionale: il commit avviene dentro il servizio, prima che l'endpoint
+   costruisca la risposta). A differenza delle due attivazioni, nessun lock pessimistico
+   esplicito: questa operazione non attiva/annulla nessuna RPT. 77/77 test verdi in tutto il
+   modulo dopo l'estrazione.
 10. ~~Acquisizione di una pendenza DEL TUTTO ASSENTE~~ — **risolto e implementato**
     (2026-10-29). `Applicazione.getApplicazioneDominio` legacy
     (`jars/core/.../business/Applicazione.java:36-65`) itera TUTTE le applicazioni registrate

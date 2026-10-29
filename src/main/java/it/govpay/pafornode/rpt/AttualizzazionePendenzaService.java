@@ -2,11 +2,13 @@ package it.govpay.pafornode.rpt;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClientException;
 
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
@@ -19,6 +21,7 @@ import it.govpay.pafornode.verifica.PendenzaVerificataMapper;
 import it.govpay.pafornode.verifica.VerificaClient;
 import it.govpay.pendenze.comando.AggiornamentoPendenza;
 import it.govpay.pendenze.entity.Pendenza;
+import it.govpay.pendenze.model.StatoPendenza;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 
 /**
@@ -74,8 +77,25 @@ public class AttualizzazionePendenzaService {
 
 	@Transactional
 	public void attualizza(Pendenza pendenza, DominioEntity dominio, String codDominio) {
-		OffsetDateTime oggi = OffsetDateTime.now(clock);
-		if (pendenza.getDataValidita() == null || pendenza.getDataValidita().isAfter(oggi)) {
+		// Stesso ordine del legacy: nessuna attualizzazione su una pendenza che non e' piu'
+		// NON_ESEGUITO (ESEGUITO/ANNULLATO/ecc. hanno gia' un esito definitivo, inutile e
+		// potenzialmente dannoso interrogare l'ente) ...
+		if (pendenza.getStato() != StatoPendenza.NON_ESEGUITO) {
+			return;
+		}
+		LocalDate oggi = LocalDate.now(clock);
+		// ... e nessuna attualizzazione se l'avviso e' GIA' scaduto: evita sia una chiamata
+		// inutile all'ente (il fault corretto, PAA_PAGAMENTO_SCADUTO, arriva comunque dal
+		// successivo PaForNodeChecks#verificaStatoPagabile) sia il rischio che una risposta
+		// dell'ente proroghi una pendenza che avrebbe dovuto restare scaduta.
+		OffsetDateTime scadenzaAvviso = pendenza.getDataScadenzaAvviso();
+		if (scadenzaAvviso != null && scadenzaAvviso.toLocalDate().isBefore(oggi)) {
+			return;
+		}
+		// Stesso confronto per giorno di PaForNodeChecks#verificaStatoPagabile: dataValidita'
+		// e' sempre scritta a mezzanotte dal mapper, un giorno puro — la validita' odierna
+		// non deve gia' innescare l'attualizzazione (resta valida fino a fine giornata).
+		if (pendenza.getDataValidita() == null || !pendenza.getDataValidita().toLocalDate().isBefore(oggi)) {
 			return;
 		}
 		ApplicazioneEntity applicazione = applicazioneRepository.findById(pendenza.getIdApplicazione())
@@ -84,28 +104,82 @@ public class AttualizzazionePendenzaService {
 
 		boolean attualizzata = false;
 		String codConnettoreVerifica = applicazione.getCodConnettoreIntegrazione();
-		if (codConnettoreVerifica != null && !codConnettoreVerifica.isBlank()) {
-			riacquisisci(pendenza, applicazione, dominio, codConnettoreVerifica, codDominio);
-			attualizzata = true;
+		boolean verificaConfigurata = codConnettoreVerifica != null && !codConnettoreVerifica.isBlank();
+		if (verificaConfigurata) {
+			attualizzata = riacquisisci(pendenza, applicazione, dominio, codConnettoreVerifica, codDominio);
+			// Controllato PRIMA di procedere a SEND, non dopo: altrimenti un esito positivo
+			// di SEND maschererebbe il fallimento della Verifica — quando il connettore di
+			// verifica E' configurato (quindi tentato) e l'attualizzazione e' mandatoria, un
+			// suo fallimento interrompe il flusso qui, indipendentemente da SEND. Il percorso
+			// solo-SEND resta consentito quando il connettore di verifica non e' configurato
+			// (verificaConfigurata false): in quel caso non c'e' nulla da aver fallito.
+			if (!attualizzata && attualizzazioneMandatoria) {
+				throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, codDominio);
+			}
 		}
 		if (pendenza.isSendAbilitato() && dominio.getCodConnettoreSend() != null) {
-			attualizzaSend(pendenza, applicazione, dominio, OffsetDateTime.now(clock));
-			attualizzata = true;
+			try {
+				attualizzaSend(pendenza, applicazione, dominio, OffsetDateTime.now(clock));
+				attualizzata = true;
+			} catch (RestClientException e) {
+				if (attualizzazioneMandatoria) {
+					throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, e.getMessage(), codDominio, e);
+				}
+			}
 		}
 		if (!attualizzata && attualizzazioneMandatoria) {
 			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, codDominio);
 		}
 	}
 
-	private void riacquisisci(Pendenza pendenza, ApplicazioneEntity applicazione, DominioEntity dominio,
+	/**
+	 * @return {@code true} se la pendenza e' stata effettivamente riacquisita/aggiornata,
+	 *         {@code false} se l'ente non ha fornito un dato utilizzabile (connettore non
+	 *         raggiungibile, risposta {@code SCONOSCIUTA}, identita' non corrispondente o
+	 *         risposta non mappabile) — in questo caso il chiamante procede con i dati
+	 *         esistenti, a meno che l'attualizzazione sia mandatoria (fault {@code
+	 *         PAA_PAGAMENTO_SCADUTO}, gestito centralmente in {@link #attualizza}).
+	 *         {@code ANNULLATA}/{@code SCADUTA} restano bloccanti SEMPRE (lanciano,
+	 *         indipendentemente da {@code attualizzazioneMandatoria}: sono un esito del
+	 *         pagamento, non un'incertezza recuperabile con i dati esistenti), e un
+	 *         eventuale errore di persistenza di {@code aggiornaPendenza} non e' mai
+	 *         catturato qui — solo il recupero della risposta e la sua mappatura lo sono.
+	 */
+	private boolean riacquisisci(Pendenza pendenza, ApplicazioneEntity applicazione, DominioEntity dominio,
 			String codConnettoreVerifica, String codDominio) {
-		PendenzaVerificata risposta = verificaClient.getAvviso(codConnettoreVerifica, dominio.getCodDominio(),
-				pendenza.getNumeroAvviso());
-		PendenzaVerificataMapper.verificaEsito(risposta, codDominio);
-		AggiornamentoPendenza comando = pendenzaVerificataMapper.toAggiornamentoPendenza(pendenza,
-				risposta.getPendenza(), dominio.getId());
+		PendenzaVerificata risposta;
+		try {
+			risposta = verificaClient.getAvviso(codConnettoreVerifica, dominio.getCodDominio(),
+					pendenza.getNumeroAvviso());
+		} catch (RestClientException e) {
+			return false;
+		}
+		try {
+			PendenzaVerificataMapper.verificaEsito(risposta, codDominio);
+			PendenzaVerificataMapper.verificaIdentita(risposta.getPendenza(), dominio.getCodDominio(),
+					pendenza.getNumeroAvviso(), codDominio);
+		} catch (NdpException e) {
+			if (e.getFault() == FaultPa.PAA_PAGAMENTO_ANNULLATO || e.getFault() == FaultPa.PAA_PAGAMENTO_SCADUTO) {
+				throw e;
+			}
+			// PAA_PAGAMENTO_SCONOSCIUTO: sia da verificaEsito (risposta SCONOSCIUTA) sia da
+			// verificaIdentita (dominio/NAV non corrispondente) — in nessuno dei due casi
+			// l'ente ha fornito un dato su cui basarsi, non un esito definitivo come
+			// ANNULLATA/SCADUTA.
+			return false;
+		}
+		AggiornamentoPendenza comando;
+		try {
+			comando = pendenzaVerificataMapper.toAggiornamentoPendenza(pendenza, risposta.getPendenza(),
+					dominio.getId());
+		} catch (IllegalStateException e) {
+			// Risposta non mappabile (voce non riconosciuta, 'voci' assente, ecc.): stesso
+			// trattamento del connettore non raggiungibile, non un errore di persistenza.
+			return false;
+		}
 		posizioneDebitoriaService.aggiornaPendenza(applicazione.getCodApplicazione(), pendenza.getIdPendenza(),
 				comando);
+		return true;
 	}
 
 	private void attualizzaSend(Pendenza pendenza, ApplicazioneEntity applicazione, DominioEntity dominio,

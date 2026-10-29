@@ -37,10 +37,12 @@ import org.springframework.web.client.RestTemplate;
 
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.repository.PendenzaRepository;
+import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.entity.StazioneEntity;
 import it.govpay.common.entity.TipoContabilita;
+import it.govpay.common.repository.ApplicazioneRepository;
 import it.govpay.common.repository.DominioRepository;
 import it.govpay.common.repository.IntermediarioRepository;
 import it.govpay.common.repository.StazioneRepository;
@@ -111,6 +113,9 @@ class PaForNodeEndpointTest {
 	private StazioneRepository stazioneRepository;
 
 	@Autowired
+	private ApplicazioneRepository applicazioneRepository;
+
+	@Autowired
 	private PosizioneDebitoriaService posizioneDebitoriaService;
 
 	@PersistenceContext
@@ -126,6 +131,7 @@ class PaForNodeEndpointTest {
 	private PlatformTransactionManager transactionManager;
 
 	private Long idDominio;
+	private Long idApplicazione;
 
 	@BeforeEach
 	void creaAnagrafiche() {
@@ -152,6 +158,18 @@ class PaForNodeEndpointTest {
 				.applicationCode(1)
 				.intermediario(intermediario)
 				.build());
+
+		// Serve una riga reale in anagrafica: AcquisizioneRicevutaService#acquisisci (via
+		// PosizioneDebitoriaService#registraEsitoPendenza) risolve codApplicazione da
+		// idApplicazione, non accetta un FK arbitrario mai censito.
+		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
+				.codApplicazione("APP-TEST")
+				.autoIuv(true)
+				.firmaRicevuta("N")
+				.trusted(true)
+				.idUtenza(1L)
+				.build());
+		idApplicazione = applicazione.getId();
 	}
 
 	@AfterEach
@@ -159,6 +177,7 @@ class PaForNodeEndpointTest {
 		stazioneRepository.deleteAll();
 		intermediarioRepository.deleteAll();
 		dominioRepository.deleteAll();
+		applicazioneRepository.deleteAll();
 	}
 
 	private IdentificativiPagamento creaPendenza(String codDocumento, double importo) {
@@ -166,7 +185,7 @@ class PaForNodeEndpointTest {
 				System.nanoTime() % 1_000_000_000_000_00L);
 
 		PosizioneDebitoria posizione = new PosizioneDebitoria();
-		posizione.setIdApplicazione(1L);
+		posizione.setIdApplicazione(idApplicazione);
 		posizione.setCodDocumento(codDocumento);
 		posizione.setIdDominio(idDominio);
 		posizione.setDescrizione("Descrizione della posizione di test");
@@ -182,7 +201,7 @@ class PaForNodeEndpointTest {
 		posizione.addOpzionePagamento(opzione);
 
 		it.govpay.pendenze.entity.Pendenza pendenza = new it.govpay.pendenze.entity.Pendenza();
-		pendenza.setIdApplicazione(1L);
+		pendenza.setIdApplicazione(idApplicazione);
 		pendenza.setIdPendenza("pend-" + codDocumento);
 		pendenza.setIdTipoPendenza(1L);
 		pendenza.setIdTipoVersamento(1L);
@@ -413,6 +432,89 @@ class PaForNodeEndpointTest {
 				"<faultCode>PAA_PAGAMENTO_DUPLICATO</faultCode>");
 		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?",
 				Integer.class, identificativi.iuv())).isZero();
+	}
+
+	private String envelopeSendRT(String idPA, String idBrokerPA, String idStation, String receiptId,
+			String fiscalCode, String creditorReferenceId, double paymentAmount, int idTransfer,
+			double transferAmount) {
+		return """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paSendRTReq>
+				      <idPA>%s</idPA>
+				      <idBrokerPA>%s</idBrokerPA>
+				      <idStation>%s</idStation>
+				      <receipt>
+				        <receiptId>%s</receiptId>
+				        <noticeNumber>300000000000000001</noticeNumber>
+				        <fiscalCode>%s</fiscalCode>
+				        <outcome>OK</outcome>
+				        <creditorReferenceId>%s</creditorReferenceId>
+				        <paymentAmount>%s</paymentAmount>
+				        <description>test</description>
+				        <companyName>Comune di Test</companyName>
+				        <debtor>
+				          <uniqueIdentifier>
+				            <entityUniqueIdentifierType>F</entityUniqueIdentifierType>
+				            <entityUniqueIdentifierValue>RSSMRA80A01H501U</entityUniqueIdentifierValue>
+				          </uniqueIdentifier>
+				          <fullName>Mario Rossi</fullName>
+				        </debtor>
+				        <transferList>
+				          <transfer>
+				            <idTransfer>%s</idTransfer>
+				            <transferAmount>%s</transferAmount>
+				            <fiscalCodePA>%s</fiscalCodePA>
+				            <IBAN>IT60X0542811101000000123456</IBAN>
+				            <remittanceInformation>test</remittanceInformation>
+				            <transferCategory>9/0101108TS/</transferCategory>
+				          </transfer>
+				        </transferList>
+				        <idPSP>PSP1</idPSP>
+				        <PSPCompanyName>Psp Uno</PSPCompanyName>
+				        <idChannel>CH1</idChannel>
+				        <channelDescription>canale</channelDescription>
+				      </receipt>
+				    </pafn:paSendRTReq>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(idPA, idBrokerPA, idStation, receiptId, fiscalCode, creditorReferenceId, paymentAmount,
+				idTransfer, transferAmount, fiscalCode);
+	}
+
+	@Test
+	void paSendRTAcquisisceLaRicevutaDopoLattivazione() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-sendrt-1", 16.00);
+
+		ResponseEntity<String> attivazione = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+		assertThat(jdbcTemplate.queryForObject("select stato_versamento from versamenti where iuv_versamento = ?",
+				String.class, identificativi.iuv())).isEqualTo("ESEGUITO");
+		assertThat(jdbcTemplate.queryForObject(
+				"select count(*) from pagamenti where iuv = ? and iur = ?", Integer.class, identificativi.iuv(),
+				"receipt-" + identificativi.iuv())).isEqualTo(1);
+	}
+
+	@Test
+	void paSendRTRestituisceFaultPerRptSconosciuta() {
+		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999996L);
+
+		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-sconosciuta", COD_DOMINIO, identificativiNonUsati.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RPT_SCONOSCIUTA</faultCode>");
 	}
 
 	@Test

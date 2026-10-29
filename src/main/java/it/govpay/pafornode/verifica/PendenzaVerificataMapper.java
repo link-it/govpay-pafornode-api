@@ -9,10 +9,12 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Component;
 
+import it.govpay.common.entity.IbanAccreditoEntity;
 import it.govpay.common.entity.TipoTributoEntity;
 import it.govpay.common.entity.TipoVersamentoDominioEntity;
 import it.govpay.common.entity.TributoEntity;
 import it.govpay.common.entity.UnitaOperativaEntity;
+import it.govpay.common.repository.IbanAccreditoRepository;
 import it.govpay.common.repository.TipoTributoRepository;
 import it.govpay.common.repository.TipoVersamentoDominioRepository;
 import it.govpay.common.repository.TributoRepository;
@@ -48,29 +50,33 @@ import it.govpay.pendenze.model.TipologiaOpzionePagamento;
  * esistente, non vengono ridichiarati dalla risposta (stesso principio di {@code
  * PosizioneDebitoriaService#aggiornaPendenza}).
  *
- * <p><b>Scope di questa prima versione</b>: una voce e' mappata solo se bollo
- * ({@code tipoBollo}+{@code hashDocumento}+{@code provinciaResidenza}) o se ha {@code
- * codEntrata} (tributo censito) — il ramo IBAN diretto del wrapper v2 non e' rappresentabile
- * in questo contratto (nessun campo {@code tipoContabilita}/{@code codiceContabilita} su
- * {@code NuovaVocePendenza}, a differenza del wrapper v2). {@code idDominio} per-voce (multi
- * ente) non e' supportato: una voce che lo dichiara fa fallire la mappatura, per non
- * cambiare silenziosamente il beneficiario. {@code datiAllegati}/{@code contabilita}/
- * {@code metadata} di voce, se popolati, fanno fallire la mappatura allo stesso modo.
+ * <p><b>Scope di questa prima versione</b>: una voce e' mappata se bollo
+ * ({@code tipoBollo}+{@code hashDocumento}+{@code provinciaResidenza}), se ha {@code
+ * codEntrata} (tributo censito), o se ha {@code ibanAccredito} (IBAN diretto, risolto in
+ * anagrafica come {@code idIbanAccredito}/{@code idIbanAppoggio} — stesso principio di
+ * {@code NuovaPendenzaMapper} del wrapper v2 in govpay-pendenze-api). {@code idDominio}
+ * per-voce (multi ente) non e' supportato: una voce che lo dichiara fa fallire la
+ * mappatura, per non cambiare silenziosamente il beneficiario. {@code datiAllegati}/
+ * {@code contabilita}/{@code metadata} di voce, se popolati, fanno fallire la mappatura
+ * allo stesso modo.
  */
 @Component
 public class PendenzaVerificataMapper {
 
 	private final TipoTributoRepository tipoTributoRepository;
 	private final TributoRepository tributoRepository;
+	private final IbanAccreditoRepository ibanAccreditoRepository;
 	private final TipoVersamentoDominioRepository tipoVersamentoDominioRepository;
 	private final UnitaOperativaRepository unitaOperativaRepository;
 	private final Clock clock;
 
 	public PendenzaVerificataMapper(TipoTributoRepository tipoTributoRepository, TributoRepository tributoRepository,
+			IbanAccreditoRepository ibanAccreditoRepository,
 			TipoVersamentoDominioRepository tipoVersamentoDominioRepository,
 			UnitaOperativaRepository unitaOperativaRepository, Clock clock) {
 		this.tipoTributoRepository = tipoTributoRepository;
 		this.tributoRepository = tributoRepository;
+		this.ibanAccreditoRepository = ibanAccreditoRepository;
 		this.tipoVersamentoDominioRepository = tipoVersamentoDominioRepository;
 		this.unitaOperativaRepository = unitaOperativaRepository;
 		this.clock = clock;
@@ -102,8 +108,18 @@ public class PendenzaVerificataMapper {
 	 * utenza di quella classe, non applicabili qui). Una sola opzione di pagamento
 	 * ({@code SOLUZIONE_UNICA}, nessuna rata/soglia: il contratto "Verifica" non porta
 	 * questi concetti).
+	 *
+	 * <p>{@code numeroAvviso} e' opzionale sul contratto EC: se il gestionale non lo
+	 * dichiara, si usa {@code numeroAvvisoRichiesto} (quello per cui e' stata interrogata
+	 * "Verifica") invece di lasciarlo assente — altrimenti {@code
+	 * PosizioneDebitoriaService#crea} ne genererebbe uno NUOVO, scorrelato da quello che il
+	 * pagatore ha in mano.
+	 *
+	 * @param numeroAvvisoRichiesto numero avviso per cui e' stata interrogata "Verifica",
+	 *                              da chiamare dopo {@link #verificaIdentita}
 	 */
-	public DatiPosizioneDebitoria creaDatiPosizioneDebitoria(NuovaPendenza dto, Long idApplicazione, Long idDominio) {
+	public DatiPosizioneDebitoria creaDatiPosizioneDebitoria(NuovaPendenza dto, Long idApplicazione, Long idDominio,
+			String numeroAvvisoRichiesto) {
 		if (dto.getVoci() == null || dto.getVoci().isEmpty()) {
 			throw new IllegalStateException("la pendenza acquisita non indica 'voci'");
 		}
@@ -125,8 +141,9 @@ public class PendenzaVerificataMapper {
 		for (NuovaVocePendenza v : dto.getVoci()) {
 			voci.add(toDatiVocePendenza(v, idDominio));
 		}
+		String numeroAvviso = dto.getNumeroAvviso() != null ? dto.getNumeroAvviso() : numeroAvvisoRichiesto;
 		DatiPendenza datiPendenza = new DatiPendenza(dto.getIdPendenza(), tvd.getId(), tvd.getTipoVersamento().getId(),
-				codificaIuvEffettiva(tvd), dto.getImporto().doubleValue(), dto.getNumeroAvviso(), null,
+				codificaIuvEffettiva(tvd), dto.getImporto().doubleValue(), numeroAvviso, null,
 				aMezzanotte(dto.getDataValidita()), aMezzanotte(dto.getDataScadenza()), voci, dto.getCausale());
 		DatiOpzionePagamento opzione = new DatiOpzionePagamento(TipologiaOpzionePagamento.SOLUZIONE_UNICA, null, null,
 				null, List.of(datiPendenza));
@@ -164,23 +181,51 @@ public class PendenzaVerificataMapper {
 		}
 
 		Long idTributo = null;
+		Long idIbanAccredito = null;
+		Long idIbanAppoggio = null;
+		String tassonomia = null;
 		String tipoBollo = null;
 		String hashDocumento = null;
 		String provinciaResidenza = null;
 
+		// Stessa priorita' del wrapper v2 (NuovaPendenzaMapper#toDatiVocePendenza, a sua
+		// volta porting di PendenteConverter.fillSingoliVersamentiFromVociPendenza del
+		// legacy): bollo, poi codEntrata, poi IBAN diretto.
 		if (v.getTipoBollo() != null && v.getHashDocumento() != null && v.getProvinciaResidenza() != null) {
 			tipoBollo = v.getTipoBollo().getValue();
 			hashDocumento = v.getHashDocumento();
 			provinciaResidenza = v.getProvinciaResidenza();
+			tassonomia = v.getCodiceTassonomicoPagoPA();
 		} else if (v.getCodEntrata() != null) {
 			idTributo = risolviIdTributo(v.getCodEntrata(), idDominio);
+		} else if (v.getIbanAccredito() != null) {
+			idIbanAccredito = risolviIdIban(v.getIbanAccredito(), idDominio);
+			idIbanAppoggio = risolviIdIban(v.getIbanAppoggio(), idDominio);
+			tassonomia = v.getCodiceTassonomicoPagoPA();
 		} else {
 			throw new IllegalStateException("la voce [" + v.getIdVocePendenza() + "] non indica ne' un bollo "
-					+ "(tipoBollo+hashDocumento+provinciaResidenza) ne' codEntrata");
+					+ "(tipoBollo+hashDocumento+provinciaResidenza), ne' codEntrata, ne' un IBAN diretto "
+					+ "(ibanAccredito+codiceTassonomicoPagoPA)");
 		}
 
 		return new DatiVocePendenza(v.getIdVocePendenza(), v.getImporto().doubleValue(), v.getDescrizione(),
-				idDominio, idTributo, null, null, null, tipoBollo, hashDocumento, provinciaResidenza, List.of());
+				idDominio, idTributo, idIbanAccredito, idIbanAppoggio, tassonomia, tipoBollo, hashDocumento,
+				provinciaResidenza, List.of());
+	}
+
+	/** Stesso principio di {@link #risolviIdTributo}, per il ramo IBAN diretto. */
+	private Long risolviIdIban(String codIban, Long idDominio) {
+		if (codIban == null) {
+			return null;
+		}
+		IbanAccreditoEntity iban = ibanAccreditoRepository.findByCodIbanAndDominioId(codIban, idDominio)
+				.orElseThrow(() -> new IllegalStateException(
+						"nessun IBAN [" + codIban + "] censito per il dominio [id:" + idDominio + "]"));
+		if (Boolean.FALSE.equals(iban.getAbilitato())) {
+			throw new IllegalStateException(
+					"l'IBAN [" + codIban + "] per il dominio [id:" + idDominio + "] non e' abilitato");
+		}
+		return iban.getId();
 	}
 
 	private static boolean contabilitaONonVuota(NuovaVocePendenza v) {
@@ -223,6 +268,24 @@ public class PendenzaVerificataMapper {
 			case NON_ESEGUITA -> {
 				// procede: la pendenza (ri)acquisita e' valida.
 			}
+		}
+	}
+
+	/**
+	 * Verifica che la pendenza restituita dal gestionale sia davvero quella richiesta —
+	 * stesso dominio, e stesso numero avviso quando il gestionale lo dichiara (e' opzionale
+	 * sul contratto EC). Senza questo controllo una risposta scorretta/scorrelata del
+	 * gestionale (altro avviso, altro dominio) verrebbe acquisita/aggiornata come se fosse
+	 * quella richiesta. Da chiamare subito dopo {@link #verificaEsito}, prima di convertire
+	 * la risposta in un comando.
+	 */
+	public static void verificaIdentita(NuovaPendenza dto, String codDominioRichiesto, String numeroAvvisoRichiesto,
+			String codDominio) {
+		if (!codDominioRichiesto.equals(dto.getIdDominio())) {
+			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO, codDominio);
+		}
+		if (dto.getNumeroAvviso() != null && !dto.getNumeroAvviso().equals(numeroAvvisoRichiesto)) {
+			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO, codDominio);
 		}
 	}
 }

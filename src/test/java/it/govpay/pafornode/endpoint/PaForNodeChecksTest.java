@@ -80,4 +80,33 @@ class PaForNodeChecksTest {
 		PaForNodeChecks.verificaStatoPagabile(pendenza, "12345678901", CLOCK, pagamentoRepository);
 		assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.NON_ESEGUITO);
 	}
+
+	/**
+	 * {@code dataScadenzaAvviso} e' sempre scritta a mezzanotte dal mapper (un giorno puro):
+	 * un avviso che scade OGGI deve restare pagabile per tutta la giornata, non solo fino
+	 * alla mezzanotte — confronto per giorno, non per istante corrente (bug riprodotto:
+	 * prima del fix, {@code CLOCK} alle 10:00 UTC rifiutava una scadenza odierna a
+	 * mezzanotte UTC).
+	 */
+	@Test
+	void procedeSeLavvisoScadeOggi() {
+		Pendenza pendenza = pendenzaConOpzione(null, null);
+		pendenza.setDataScadenzaAvviso(LocalDate.now(CLOCK).atStartOfDay(CLOCK.getZone()).toOffsetDateTime());
+		when(pagamentoRepository.findByCodDominioAndIuv("12345678901", pendenza.getIuv())).thenReturn(List.of());
+
+		PaForNodeChecks.verificaStatoPagabile(pendenza, "12345678901", CLOCK, pagamentoRepository);
+		assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.NON_ESEGUITO);
+	}
+
+	@Test
+	void rifiutaSeLavvisoEScadutoIlGiornoPrecedente() {
+		Pendenza pendenza = pendenzaConOpzione(null, null);
+		pendenza.setDataScadenzaAvviso(
+				LocalDate.now(CLOCK).minusDays(1).atStartOfDay(CLOCK.getZone()).toOffsetDateTime());
+
+		assertThatThrownBy(
+				() -> PaForNodeChecks.verificaStatoPagabile(pendenza, "12345678901", CLOCK, pagamentoRepository))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
+	}
 }

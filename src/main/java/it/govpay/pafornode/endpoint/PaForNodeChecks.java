@@ -96,13 +96,17 @@ public final class PaForNodeChecks {
 			throw new NdpException(FaultPa.PAA_PAGAMENTO_DUPLICATO,
 					descrizioneDuplicato(pendenza, codDominio, pagamentoRepository), codDominio);
 		}
+		LocalDate oggi = LocalDate.now(clock);
+		// Il mapper scrive sempre questa data a mezzanotte (un giorno puro, nessun istante):
+		// confronto per GIORNO, non per istante, altrimenti una scadenza odierna verrebbe
+		// rifiutata non appena l'orologio supera la mezzanotte dello stesso giorno — il
+		// legacy mantiene valido l'intero giorno di scadenza.
 		OffsetDateTime scadenzaAvviso = pendenza.getDataScadenzaAvviso();
-		if (scadenzaAvviso != null && scadenzaAvviso.isBefore(OffsetDateTime.now(clock))) {
+		if (scadenzaAvviso != null && scadenzaAvviso.toLocalDate().isBefore(oggi)) {
 			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, codDominio);
 		}
 
 		OpzionePagamento opzione = pendenza.getOpzionePagamento();
-		LocalDate oggi = LocalDate.now(clock);
 		if (opzione.getDataInizioValidita() != null && opzione.getDataInizioValidita().isAfter(oggi)) {
 			// Nessun FaultPa legacy corrisponde a "non ancora aperta" (concetto introdotto in
 			// questa generazione dall'opzione di pagamento v3): stessa famiglia della pendenza

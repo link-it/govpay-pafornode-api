@@ -77,6 +77,11 @@ class AttualizzazionePendenzaServiceTest {
 	}
 
 	private PendenzaVerificata pendenzaVerificata(StatoPendenzaVerificata stato) {
+		return pendenzaVerificata(stato, COD_DOMINIO, "302000100000019421");
+	}
+
+	private PendenzaVerificata pendenzaVerificata(StatoPendenzaVerificata stato, String idDominio,
+			String numeroAvviso) {
 		PendenzaVerificata risposta = new PendenzaVerificata();
 		risposta.setStato(stato);
 		if (stato == StatoPendenzaVerificata.NON_ESEGUITA) {
@@ -88,7 +93,8 @@ class AttualizzazionePendenzaServiceTest {
 			NuovaPendenza pendenza = new NuovaPendenza();
 			pendenza.setImporto(BigDecimal.TEN);
 			pendenza.setCausale("causale riacquisita");
-			pendenza.setNumeroAvviso("302000100000019421");
+			pendenza.setIdDominio(idDominio);
+			pendenza.setNumeroAvviso(numeroAvviso);
 			pendenza.setVoci(List.of(voce));
 			risposta.setPendenza(pendenza);
 		}
@@ -203,17 +209,86 @@ class AttualizzazionePendenzaServiceTest {
 				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
 	}
 
+	/**
+	 * A differenza di {@code ANNULLATA}/{@code SCADUTA} (esiti definitivi, sempre
+	 * bloccanti): {@code SCONOSCIUTA} e' un'incertezza dell'ente, non un esito — stesso
+	 * trattamento del connettore non raggiungibile, si procede con i dati esistenti se
+	 * l'attualizzazione non e' mandatoria.
+	 */
 	@Test
-	void falliceConPagamentoSconosciutoSeLaVerificaRestituisceSconosciuta() {
+	void nonFalliceSeLaVerificaRestituisceSconosciutaENonEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenReturn(pendenzaVerificata(StatoPendenzaVerificata.SCONOSCIUTA));
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio(null), COD_DOMINIO);
+
+		verify(posizioneDebitoriaService, never()).aggiornaPendenza(any(), any(), any());
+	}
+
+	@Test
+	void falliceConPagamentoScadutoSeLaVerificaRestituisceSconosciutaEMandatoria() {
 		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
 		applicazionePersistita("VERIFICA_TEST");
 		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
 				.thenReturn(pendenzaVerificata(StatoPendenzaVerificata.SCONOSCIUTA));
 
 		assertThatThrownBy(
-				() -> service(Duration.ofHours(1), false).attualizza(pendenza, dominio(null), COD_DOMINIO))
+				() -> service(Duration.ofHours(1), true).attualizza(pendenza, dominio(null), COD_DOMINIO))
 				.isInstanceOf(NdpException.class)
-				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO);
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
+	}
+
+	/**
+	 * Il fallimento della Verifica mandatoria va controllato PRIMA di procedere a SEND:
+	 * un esito positivo di SEND (connettore configurato e abilitato, separato dalla
+	 * Verifica) non deve mascherare il fallimento della Verifica stessa, quando il suo
+	 * connettore e' configurato (quindi tentato).
+	 */
+	@Test
+	void falliceConPagamentoScadutoSeLaVerificaFalliscEMandatoriaAncheSeSendRiuscirebbe() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), true, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenReturn(pendenzaVerificata(StatoPendenzaVerificata.SCONOSCIUTA));
+		when(sendClient.recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenReturn(100L);
+
+		assertThatThrownBy(() -> service(Duration.ofHours(1), true).attualizza(pendenza, dominio("SEND_TEST"),
+				COD_DOMINIO)).isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
+		verifyNoInteractions(sendClient);
+		verify(posizioneDebitoriaService, never()).registraImportoSend(any(), any(), any(), any());
+	}
+
+	@Test
+	void nonFalliceSeLaMappaturaDellaRispostaFallisceENonEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		PendenzaVerificata risposta = pendenzaVerificata(StatoPendenzaVerificata.NON_ESEGUITA);
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso())).thenReturn(risposta);
+		when(pendenzaVerificataMapper.toAggiornamentoPendenza(pendenza, risposta.getPendenza(), 1L))
+				.thenThrow(new IllegalStateException("voce non riconosciuta"));
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio(null), COD_DOMINIO);
+
+		verify(posizioneDebitoriaService, never()).aggiornaPendenza(any(), any(), any());
+	}
+
+	@Test
+	void falliceConPagamentoScadutoSeLaMappaturaDellaRispostaFalliscEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		PendenzaVerificata risposta = pendenzaVerificata(StatoPendenzaVerificata.NON_ESEGUITA);
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso())).thenReturn(risposta);
+		when(pendenzaVerificataMapper.toAggiornamentoPendenza(pendenza, risposta.getPendenza(), 1L))
+				.thenThrow(new IllegalStateException("voce non riconosciuta"));
+
+		assertThatThrownBy(
+				() -> service(Duration.ofHours(1), true).attualizza(pendenza, dominio(null), COD_DOMINIO))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
 	}
 
 	@Test
@@ -232,5 +307,114 @@ class AttualizzazionePendenzaServiceTest {
 
 		verify(posizioneDebitoriaService).aggiornaPendenza(any(), any(), any());
 		verify(posizioneDebitoriaService).registraImportoSend("APP-TEST", "pend-test", 1.0, OffsetDateTime.now(CLOCK));
+	}
+
+	/**
+	 * Stesso trattamento di {@code SCONOSCIUTA}: l'identita' non corrispondente non e' un
+	 * esito definitivo dell'ente, solo un dato non utilizzabile — si procede con quelli
+	 * esistenti se non mandatoria, mai si aggiorna la pendenza con una risposta scorrelata.
+	 */
+	@Test
+	void nonFalliceSeLaVerificaRestituisceUnDominioDiversoENonEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenReturn(pendenzaVerificata(StatoPendenzaVerificata.NON_ESEGUITA, "99999999999",
+						pendenza.getNumeroAvviso()));
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio(null), COD_DOMINIO);
+
+		verify(posizioneDebitoriaService, never()).aggiornaPendenza(any(), any(), any());
+	}
+
+	@Test
+	void falliceConPagamentoScadutoSeLaVerificaRestituisceUnDominioDiversoEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenReturn(pendenzaVerificata(StatoPendenzaVerificata.NON_ESEGUITA, "99999999999",
+						pendenza.getNumeroAvviso()));
+
+		assertThatThrownBy(
+				() -> service(Duration.ofHours(1), true).attualizza(pendenza, dominio(null), COD_DOMINIO))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
+	}
+
+	@Test
+	void nonFalliceSeLaVerificaRestituisceUnNumeroAvvisoDiversoENonEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenReturn(pendenzaVerificata(StatoPendenzaVerificata.NON_ESEGUITA, COD_DOMINIO,
+						"999999999999999999"));
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio(null), COD_DOMINIO);
+
+		verify(posizioneDebitoriaService, never()).aggiornaPendenza(any(), any(), any());
+	}
+
+	@Test
+	void nonFaNullaSeLaPendenzaNonENonEseguita() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), true, null);
+		pendenza.setStato(it.govpay.pendenze.model.StatoPendenza.ESEGUITO);
+		applicazionePersistita("VERIFICA_TEST");
+
+		service(Duration.ofHours(1), true).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
+
+		verifyNoInteractions(verificaClient, sendClient);
+	}
+
+	@Test
+	void nonFaNullaSeLavvisoEGiaScaduto() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), true, null);
+		pendenza.setDataScadenzaAvviso(OffsetDateTime.now(CLOCK).minusDays(1).toLocalDate().atStartOfDay(CLOCK.getZone())
+				.toOffsetDateTime());
+		applicazionePersistita("VERIFICA_TEST");
+
+		service(Duration.ofHours(1), true).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
+
+		verifyNoInteractions(verificaClient, sendClient);
+	}
+
+	/**
+	 * {@code dataValidita} e' sempre scritta a mezzanotte dal mapper: una validita' odierna
+	 * non deve gia' innescare l'attualizzazione (resta valida fino a fine giornata, stesso
+	 * confronto per giorno di {@code PaForNodeChecksTest#procedeSeLavvisoScadeOggi}).
+	 */
+	@Test
+	void nonAttualizzaSeLaValiditaEOggi() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).toLocalDate().atStartOfDay(CLOCK.getZone())
+				.toOffsetDateTime(), true, null);
+		applicazionePersistita("VERIFICA_TEST");
+
+		service(Duration.ofHours(1), true).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
+
+		verifyNoInteractions(verificaClient, sendClient);
+	}
+
+	@Test
+	void nonFalliceSeIlConnettoreDiVerificaNonERaggiungibileENonEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenThrow(new org.springframework.web.client.ResourceAccessException("connessione rifiutata"));
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio(null), COD_DOMINIO);
+
+		verify(posizioneDebitoriaService, never()).aggiornaPendenza(any(), any(), any());
+	}
+
+	@Test
+	void falliceConPagamentoScadutoSeIlConnettoreDiVerificaNonERaggiungibileEMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), false, null);
+		applicazionePersistita("VERIFICA_TEST");
+		when(verificaClient.getAvviso("VERIFICA_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+				.thenThrow(new org.springframework.web.client.ResourceAccessException("connessione rifiutata"));
+
+		assertThatThrownBy(
+				() -> service(Duration.ofHours(1), true).attualizza(pendenza, dominio(null), COD_DOMINIO))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
 	}
 }

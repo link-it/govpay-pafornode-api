@@ -1,8 +1,10 @@
 package it.govpay.pafornode.rpt;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -132,5 +134,51 @@ class RptAttivazioneServiceTest {
 
 		List<Rpt> tutte = rptRepository.findByIdVersamentoOrderByDataMsgRichiestaAsc(pendenza.getId());
 		assertThat(tutte).hasSize(2);
+	}
+
+	@Test
+	void ricostruisceUnaRptStandinSenzaXmlRpt() {
+		Pendenza pendenza = pendenzaPersistita("00000000000000000003");
+		DominioEntity dominio = dominio();
+		dominio.setStazione(stazione());
+		OffsetDateTime dataPagamento = OffsetDateTime.now().minusMinutes(5);
+
+		Rpt rpt = service.ricostruisci(pendenza, dominio, RptAttivazioneService.VERSIONE_SANP_240, "receipt-standin",
+				dataPagamento);
+
+		assertThat(rpt.getId()).isNotNull();
+		assertThat(rpt.getIdVersamento()).isEqualTo(pendenza.getId());
+		assertThat(rpt.getIuv()).isEqualTo(pendenza.getIuv());
+		assertThat(rpt.getIur()).isEqualTo("receipt-standin");
+		assertThat(rpt.getCodDominio()).isEqualTo(dominio.getCodDominio());
+		assertThat(rpt.getCodStazione()).isEqualTo(stazione().getCodStazione());
+		assertThat(rpt.getCodMsgRichiesta()).isEqualTo("receipt-standin");
+		assertThat(rpt.getVersione()).isEqualTo(RptAttivazioneService.VERSIONE_SANP_240);
+		assertThat(rpt.getStato()).isEqualTo(StatoRpt.RPT_ACCETTATA_NODO.name());
+		assertThat(rpt.getModelloPagamento()).isEqualTo(RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
+		assertThat(rpt.getDataMsgRichiesta()).isEqualTo(dataPagamento);
+		assertThat(rpt.getXmlRpt()).isNull();
+		assertThat(rpt.getCodCarrello()).isNull();
+	}
+
+	@Test
+	void ricostruisceConDataMsgRichiestaAdessoSeDataPagamentoAssente() {
+		Pendenza pendenza = pendenzaPersistita("00000000000000000004");
+		DominioEntity dominio = dominio();
+		dominio.setStazione(stazione());
+
+		Rpt rpt = service.ricostruisci(pendenza, dominio, RptAttivazioneService.VERSIONE_SANP_321_V2,
+				"receipt-standin-2", null);
+
+		assertThat(rpt.getDataMsgRichiesta()).isNotNull();
+	}
+
+	@Test
+	void rifiutaSeIlDominioNonHaUnaStazioneDiDefault() {
+		Pendenza pendenza = pendenzaPersistita("00000000000000000005");
+		DominioEntity dominio = dominio();
+
+		assertThatThrownBy(() -> service.ricostruisci(pendenza, dominio, RptAttivazioneService.VERSIONE_SANP_240,
+				"receipt-standin-3", null)).isInstanceOf(IllegalStateException.class);
 	}
 }

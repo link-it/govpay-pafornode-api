@@ -66,12 +66,27 @@ import it.govpay.pafornode.ricevuta.DatiRicevutaPagamento.DatiTrasferimentoRicev
  * {@code Jaxb2Marshaller}) e la validazione semantica RT-contro-RPT (qui, non in
  * govpay-common-pendenze: dipende dai tipi JAXB della richiesta originale).</p>
  *
+ * <p><b>Ricostruzione "standin"</b> (punto aperto #14 del design doc, {@code
+ * CtReceiptUtils.ricostruisciRPT}/{@code CtReceiptV2Utils.ricostruisciRPT} nel monolite):
+ * se non esiste nessuna RPT in attesa di ricevuta ({@code RPT_ACCETTATA_NODO}) E non
+ * esiste nessun'altra RPT del modello {@code ATTIVATO_PRESSO_PSP} (di qualunque stato,
+ * stesso filtro per modello del legacy) per questa pendenza, significa che il pagamento
+ * e' stato attivato direttamente al PSP tramite il Nodo, senza mai passare da {@code
+ * paGetPayment}/{@code paGetPaymentV2} — {@link #trovaRptInAttesa} ricostruisce in quel
+ * caso una RPT minimale ({@link RptAttivazioneService#ricostruisci}, {@code xmlRpt}
+ * sempre {@code null}). Una RPT di un altro modello (altri canali di pagamento) non
+ * blocca lo standin. Se invece esiste gia' una RPT di questo modello in un altro stato,
+ * resta {@code PAA_RPT_SCONOSCIUTA} come nel legacy: non si ricostruisce una seconda
+ * volta.</p>
+ *
+ * <p>La deserializzazione/validazione semantica RT-contro-RPT ({@link
+ * #validaSemantica}/{@code V2}) viene saltata quando la RPT non ha {@code xmlRpt} (il caso
+ * standin: nessuna richiesta originale con cui confrontarsi) — stessa condizione del
+ * legacy.</p>
+ *
  * <p><b>Punti aperti, non implementati qui</b> (vedi Javadoc di classe di
- * {@link AcquisizioneRicevutaService} e punto aperto #14 del design doc):
- * ricostruzione "standin" di un'RPT mai attivata da GovPay ({@code
- * CtReceiptUtils.ricostruisciRPT} nel monolite — qui una RPT non trovata e' sempre
- * {@code PAA_RPT_SCONOSCIUTA}); validazione semantica semplificata (solo i due controlli
- * "fatali" del legacy — {@code creditorReferenceId} e coerenza del numero di
+ * {@link AcquisizioneRicevutaService}): validazione semantica semplificata (solo i due
+ * controlli "fatali" del legacy — {@code creditorReferenceId} e coerenza del numero di
  * trasferimenti — non l'intero confronto campo per campo, incluso il caso ibrido
  * {@code RPTV2_RTV1}); nessuna persistenza separata dello stato {@code RT_RIFIUTATA_PA}
  * quando la validazione semantica fallisce (il legacy la commit a parte prima di
@@ -120,13 +135,17 @@ public class PaSendRTService {
 
 		DominioEntity dominio = verificaAutorizzazione(request.getIdBrokerPA(), request.getIdStation(), codDominio);
 		Pendenza pendenza = trovaEBloccaPendenza(dominio.getId(), iuv, codDominio);
-		Rpt rpt = trovaRptInAttesa(dominio.getCodDominio(), pendenza, receipt.getReceiptId(), codDominio);
+		OffsetDateTime dataPagamento = convertiData(receipt.getPaymentDateTime());
+		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
+				RptAttivazioneService.VERSIONE_SANP_240, codDominio);
 
-		CtPaymentPA richiesta = rptAttivazioneService.deserializzaDati(rpt);
-		validaSemantica(richiesta, receipt, codDominio);
+		if (rpt.getXmlRpt() != null) {
+			CtPaymentPA richiesta = rptAttivazioneService.deserializzaDati(rpt);
+			validaSemantica(richiesta, receipt, codDominio);
+		}
 
 		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
-				receipt.getPaymentDateTime(), receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
+				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
 				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
 				serializza(request), trasferimentiV1(receipt));
 		acquisizioneRicevutaService.acquisisci(pendenza, rpt, dati);
@@ -144,13 +163,17 @@ public class PaSendRTService {
 
 		DominioEntity dominio = verificaAutorizzazione(request.getIdBrokerPA(), request.getIdStation(), codDominio);
 		Pendenza pendenza = trovaEBloccaPendenza(dominio.getId(), iuv, codDominio);
-		Rpt rpt = trovaRptInAttesa(dominio.getCodDominio(), pendenza, receipt.getReceiptId(), codDominio);
+		OffsetDateTime dataPagamento = convertiData(receipt.getPaymentDateTime());
+		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
+				RptAttivazioneService.VERSIONE_SANP_321_V2, codDominio);
 
-		CtPaymentPAV2 richiesta = rptAttivazioneService.deserializzaDatiV2(rpt);
-		validaSemanticaV2(richiesta, receipt, codDominio);
+		if (rpt.getXmlRpt() != null) {
+			CtPaymentPAV2 richiesta = rptAttivazioneService.deserializzaDatiV2(rpt);
+			validaSemanticaV2(richiesta, receipt, codDominio);
+		}
 
 		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
-				receipt.getPaymentDateTime(), receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
+				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
 				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
 				serializzaV2(request), trasferimentiV2(receipt));
 		acquisizioneRicevutaService.acquisisci(pendenza, rpt, dati);
@@ -184,14 +207,41 @@ public class PaSendRTService {
 	 * Idempotenza (gia' acquisita con questo {@code receiptId}) poi ricerca della RPT in
 	 * attesa di ricevuta — in quest'ordine, cosi' un retry con lo stesso {@code receiptId}
 	 * produce {@code PAA_RECEIPT_DUPLICATA} e non {@code PAA_RPT_SCONOSCIUTA} (la riga e'
-	 * ormai in stato {@code RT_ACCETTATA_PA}, non piu' {@code RPT_ACCETTATA_NODO}).
+	 * ormai in stato {@code RT_ACCETTATA_PA}, non piu' {@code RPT_ACCETTATA_NODO}). La
+	 * ricerca della RPT in attesa e' filtrata anche per modello ({@code
+	 * ATTIVATO_PRESSO_PSP}, stesso filtro dello standin sotto): senza questo filtro una
+	 * RPT di un ALTRO modello ancora in questo stato verrebbe selezionata ed usata al
+	 * posto della ricostruzione "standin". Se nessuna RPT in attesa di questo modello
+	 * esiste, ricade sul caso "standin" ({@link #standin}) prima di arrendersi col fault
+	 * — vedi Javadoc di classe.
 	 */
-	private Rpt trovaRptInAttesa(String codDominio, Pendenza pendenza, String receiptId, String codDominioFault) {
-		if (rptRepository.findByCodDominioAndIuvAndIur(codDominio, pendenza.getIuv(), receiptId).isPresent()) {
+	private Rpt trovaRptInAttesa(DominioEntity dominio, Pendenza pendenza, String receiptId,
+			OffsetDateTime dataPagamento, String versione, String codDominioFault) {
+		if (rptRepository.findByCodDominioAndIuvAndIur(dominio.getCodDominio(), pendenza.getIuv(), receiptId)
+				.isPresent()) {
 			throw new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, codDominioFault);
 		}
-		return rptRepository.findByIdVersamentoAndStato(pendenza.getId(), StatoRpt.RPT_ACCETTATA_NODO.name())
-				.orElseThrow(() -> new NdpException(FaultPa.PAA_RPT_SCONOSCIUTA, codDominioFault));
+		return rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(pendenza.getId(),
+				StatoRpt.RPT_ACCETTATA_NODO.name(), RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)
+				.orElseGet(() -> standin(dominio, pendenza, receiptId, dataPagamento, versione, codDominioFault));
+	}
+
+	/**
+	 * Ricostruzione "standin" (vedi Javadoc di classe): si applica solo se non esiste
+	 * NESSUNA RPT del modello {@code ATTIVATO_PRESSO_PSP}, di qualunque stato, per questa
+	 * pendenza — stesso filtro del legacy ({@code rptBD.getRpt(codDominio, iuv,
+	 * ModelloPagamento.ATTIVATO_PRESSO_PSP, null)}). Una RPT di un altro modello (altri
+	 * canali di pagamento) non blocca lo standin; se invece esiste gia' una RPT di questo
+	 * modello, resta {@code PAA_RPT_SCONOSCIUTA} come nel legacy, non si ricostruisce una
+	 * seconda volta.
+	 */
+	private Rpt standin(DominioEntity dominio, Pendenza pendenza, String receiptId, OffsetDateTime dataPagamento,
+			String versione, String codDominioFault) {
+		if (rptRepository.existsByIdVersamentoAndModelloPagamento(pendenza.getId(),
+				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)) {
+			throw new NdpException(FaultPa.PAA_RPT_SCONOSCIUTA, codDominioFault);
+		}
+		return rptAttivazioneService.ricostruisci(pendenza, dominio, versione, receiptId, dataPagamento);
 	}
 
 	/**
@@ -255,16 +305,19 @@ public class PaSendRTService {
 		return trasferimenti;
 	}
 
-	private DatiRicevutaPagamento estraiDati(String receiptId, boolean eseguito,
-			XMLGregorianCalendar paymentDateTime, java.math.BigDecimal paymentAmount, String pspFiscalCode,
-			String pspCompanyName, String idPSP, String idChannel, String paymentMethod, byte[] xmlRt,
-			List<DatiTrasferimentoRicevuto> trasferimenti) {
-		OffsetDateTime dataPagamento = paymentDateTime != null
-				? paymentDateTime.toGregorianCalendar().toZonedDateTime().toOffsetDateTime()
-				: OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC);
+	private DatiRicevutaPagamento estraiDati(String receiptId, boolean eseguito, OffsetDateTime dataPagamento,
+			java.math.BigDecimal paymentAmount, String pspFiscalCode, String pspCompanyName, String idPSP,
+			String idChannel, String paymentMethod, byte[] xmlRt, List<DatiTrasferimentoRicevuto> trasferimenti) {
 		return new DatiRicevutaPagamento(receiptId, eseguito, dataPagamento,
 				paymentAmount != null ? paymentAmount.doubleValue() : 0d, pspFiscalCode, pspCompanyName, idPSP,
 				idChannel, paymentMethod, xmlRt, trasferimenti);
+	}
+
+	/** Stesso fallback-a-ora di prima: usato sia per {@link DatiRicevutaPagamento} sia per la ricostruzione "standin". */
+	private OffsetDateTime convertiData(XMLGregorianCalendar paymentDateTime) {
+		return paymentDateTime != null
+				? paymentDateTime.toGregorianCalendar().toZonedDateTime().toOffsetDateTime()
+				: OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC);
 	}
 
 	private byte[] serializza(PaSendRTReq request) {

@@ -1,6 +1,7 @@
 package it.govpay.pafornode.rpt;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -128,6 +129,25 @@ class CtPaymentPaV2BuilderTest {
 
 		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfer().get(0);
 		assertThat(transfer.getRichiestaMarcaDaBollo().getTipoBollo()).isEqualTo("01");
+	}
+
+	/**
+	 * Per il bollo la tassonomia (qui azzerata apposta, a differenza del resto della
+	 * fixture) e' l'unica classificazione ammessa, non un tributo — vedi Javadoc di
+	 * {@link ContabilitaResolver#transferCategory}.
+	 */
+	@Test
+	void unaVoceBolloSenzaTassonomiaFalliscConErroreEsplicitoNonConNpe() {
+		Pendenza pendenza = pendenzaConUnaVoce(16.00, null);
+		VocePendenza voce = pendenza.getVoci().get(0);
+		voce.setHashDocumento(Base64.getEncoder().encodeToString("hash-documento".getBytes()));
+		voce.setProvinciaResidenza("RM");
+		voce.setTipoBollo("01");
+		voce.setTipoContabilita(null);
+		voce.setCodiceContabilita(null);
+
+		assertThatThrownBy(() -> builder.costruisci(pendenza, dominio(), null))
+				.isInstanceOf(IllegalStateException.class);
 	}
 
 	@Test

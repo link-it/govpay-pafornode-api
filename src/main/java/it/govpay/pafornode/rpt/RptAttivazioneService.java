@@ -39,6 +39,11 @@ import it.govpay.pendenze.repository.RptRepository;
  * (V1, {@code CtPaymentPA}), {@link #attivaV2}/{@link #deserializzaDatiV2} per {@code
  * paGetPaymentV2} ({@code CtPaymentPAV2}, versione RPT {@code SANP_321_V2}, {@code
  * codCarrello}).
+ *
+ * <p>{@link #ricostruisci} copre invece il caso "standin" (punto aperto #14 del design
+ * doc): una RPT mai attivata da GovPay, ricostruita al volo quando arriva direttamente la
+ * ricevuta — porting di {@code CtReceiptUtils.ricostruisciRPT}/{@code
+ * CtReceiptV2Utils.ricostruisciRPT} del monolite, usato da {@code PaSendRTService}.</p>
  */
 @Service
 public class RptAttivazioneService {
@@ -46,8 +51,10 @@ public class RptAttivazioneService {
 	/** Codifica legacy di {@code ModelloPagamento.ATTIVATO_PRESSO_PSP}, unico modello gestito. */
 	public static final String MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP = "4";
 
-	private static final String VERSIONE_SANP_240 = "SANP_240";
-	private static final String VERSIONE_SANP_321_V2 = "SANP_321_V2";
+	/** Versione RPT per {@code paSendRT} (V1) e per la corrispondente ricostruzione "standin". */
+	public static final String VERSIONE_SANP_240 = "SANP_240";
+	/** Versione RPT per {@code paSendRTV2} (V2) e per la corrispondente ricostruzione "standin". */
+	public static final String VERSIONE_SANP_321_V2 = "SANP_321_V2";
 
 	private final PendenzaRepository pendenzaRepository;
 	private final RptRepository rptRepository;
@@ -97,6 +104,46 @@ public class RptAttivazioneService {
 			String codCarrello, CtPaymentPAV2 ctPayment) {
 		Rpt rpt = nuovaRptAttivata(pendenza, dominio, stazione, ccp, VERSIONE_SANP_321_V2, codCarrello);
 		rpt.setXmlRpt(serializzaV2(ctPayment));
+		return rptRepository.save(rpt);
+	}
+
+	/**
+	 * Ricostruisce una RPT "standin": nessuna richiesta di pagamento originale da cui
+	 * ripartire, {@code xmlRpt} resta {@code null} — la validazione semantica
+	 * RT-contro-RPT viene quindi saltata dal chiamante, stesso comportamento del legacy
+	 * che la condiziona a {@code rpt.getXmlRpt() != null}.
+	 *
+	 * <p>A differenza di {@link #attiva}/{@link #attivaV2}: nessun {@link
+	 * #annullaPendenti} (per costruzione non esiste ancora nessuna RPT su questa
+	 * pendenza, altrimenti il chiamante non avrebbe scelto questo percorso); la stazione
+	 * e' quella di default del dominio ({@link DominioEntity#getStazione()}), non quella
+	 * autenticata dalla chiamata corrente — non c'e' stata nessuna attivazione a cui
+	 * agganciarsi; {@code codMsgRichiesta}/{@code iur} sono il {@code receiptId} della
+	 * ricevuta in arrivo, non un valore generato qui.</p>
+	 */
+	@Transactional
+	public Rpt ricostruisci(Pendenza pendenza, DominioEntity dominio, String versione, String receiptId,
+			OffsetDateTime dataPagamento) {
+		pendenzaRepository.findByIdForUpdate(pendenza.getId())
+				.orElseThrow(() -> new IllegalStateException("Pendenza [" + pendenza.getId() + "] non trovata."));
+		StazioneEntity stazione = dominio.getStazione();
+		if (stazione == null) {
+			throw new IllegalStateException("Dominio [" + dominio.getCodDominio() + "] senza stazione di default.");
+		}
+
+		OffsetDateTime adesso = OffsetDateTime.now(clock);
+		Rpt rpt = new Rpt();
+		rpt.setIdVersamento(pendenza.getId());
+		rpt.setIuv(pendenza.getIuv());
+		rpt.setIur(receiptId);
+		rpt.setCodDominio(dominio.getCodDominio());
+		rpt.setCodStazione(stazione.getCodStazione());
+		rpt.setCodMsgRichiesta(receiptId);
+		rpt.setVersione(versione);
+		rpt.setStato(StatoRpt.RPT_ACCETTATA_NODO.name());
+		rpt.setDataMsgRichiesta(dataPagamento != null ? dataPagamento : adesso);
+		rpt.setDataAggiornamentoStato(adesso);
+		rpt.setModelloPagamento(MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
 		return rptRepository.save(rpt);
 	}
 

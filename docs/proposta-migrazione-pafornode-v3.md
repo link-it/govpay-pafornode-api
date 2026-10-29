@@ -31,16 +31,18 @@ Attualizzazione (§3quinquies): tutti e tre i rami — SEND, riacquisizione (pen
 con validità scaduta) e acquisizione (pendenza DEL TUTTO ASSENTE, punto aperto #10) — sono
 ora implementati e cablati su `paGetPayment` (`SendClient`/`VerificaClient`/
 `PendenzaVerificataMapper`/`ApplicazioneDominioResolver`/`AttualizzazionePendenzaService`).
-**`paGetPayment` (V1) è quindi completo per tutti i casi analizzati**, salvo: il punto aperto
-#11 (spedizione effettiva della notifica di attivazione — resta solo accodamento), e il
-punto aperto #1 (autenticazione X.509, infrastruttura/deployment, fuori scope applicativo).
+**`paGetPayment` (V1) è quindi completo per tutti i casi analizzati**, salvo il punto
+aperto #1 (autenticazione X.509, infrastruttura/deployment, fuori scope applicativo). Il
+punto #11 (spedizione della notifica di attivazione) è risolto: deciso con il committente
+di tenere solo il contratto EC v2, quindi nessuna spedizione — resta accodamento soltanto,
+per costruzione, non un gap da chiudere.
 
 **`paGetPaymentV2` implementato** (§3septies, 2026-10-29): stessa infrastruttura di
 `paGetPayment` (riusata senza modifiche), nuovo `CtPaymentPaV2Builder`/
 `PaGetPaymentV2ActivationService`, inclusi i metadati di contabilità/custom per transfer
 (mappatura su `DettaglioContabile`, chiavi `RC_*` del Dizionario dei metadata pagoPA —
-punto #12 risolto). Resta solo il punto aperto #13 (rischio NPE non corretto su una voce di
-bollo senza contabilità propria).
+punto #12 risolto). Punto aperto #13 (rischio NPE su una voce di bollo senza tassonomia)
+anch'esso risolto (2026-10-29) — vedi §3duodecies.
 
 **`paVerifyPaymentNotice` cablato con l'attualizzazione completa** (punto aperto #9,
 risolto 2026-10-29): estratta l'intera logica in `PaVerifyPaymentNoticeService`
@@ -57,10 +59,10 @@ pendenza/RPT/pagamento) nata in govpay-common-pendenze, **spostata qui** (§3dec
 acquisisce ricevute pagoPA, nessun secondo consumer ne giustifica più la condivisione.
 `PaSendRTService` per i controlli/dati specifici del contratto paForNode (autorizzazione,
 ricerca/lock RPT, deserializzazione del payload originale, validazione semantica
-semplificata). Punti aperti: ricostruzione "standin" (RPT mai attivata da GovPay) e
-validazione semantica completa (incluso il caso ibrido RPTV2_RTV1) non implementate —
-vedi punto aperto #14. 218/218 test verdi in govpay-common-pendenze, 110/110 in
-govpay-pafornode-api.
+semplificata). Ricostruzione "standin" (RPT mai attivata da GovPay) **implementata**
+(§3undecies, 2026-10-29). Resta aperta solo la validazione semantica completa (incluso il
+caso ibrido RPTV2_RTV1) — vedi punto aperto #14. 221/221 test verdi in
+govpay-common-pendenze, 125/125 in govpay-pafornode-api.
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -424,13 +426,7 @@ annullamento RPT pendenti) è riusata senza modifiche da `PaGetPaymentV2Activati
 - Multibeneficiario: nessuna logica nuova, `IbanAccreditoResolver`/`ContabilitaResolver`
   (V1) già generalizzano correttamente voce-per-voce/dominio-per-dominio.
 
-**Rischio noto, non corretto** (documentato nel Javadoc di `CtPaymentPaV2Builder`):
-`transferCategory` si calcola allo stesso modo per ogni transfer, bollo compreso (stessa
-chiamata incondizionata del legacy) — una voce di bollo senza `tipoContabilita`/
-`codiceContabilita` propri e senza tributo fa fallire con `NullPointerException` (riprodotto
-in test, poi corretto nella fixture di test, non nel codice — non verificato se il legacy
-stesso vada in NPE nello stesso scenario o se una voce di bollo reale porti sempre questi
-valori per altra via).
+**Rischio NPE su `transferCategory` per una voce di bollo — risolto, vedi §3duodecies.**
 
 **Metadati di contabilità/custom per transfer — implementato** (2026-10-29): **non** è un
 adattamento del vecchio JSON legacy (`QuotaContabilita`) — il modello v3-nativo lo ha
@@ -508,18 +504,18 @@ del payload originale (`RptAttivazioneService#deserializzaDati`/`V2`, già esist
 validazione semantica (qui perché dipende dai tipi JAXB della richiesta originale).
 
 **Punto aperto nuovo**:
-14. **Ricostruzione "standin" e validazione semantica completa non implementate**
-    (`paSendRT`/`paSendRTV2`, 2026-10-29): il legacy, se non trova un'RPT per
-    dominio/iuv, ricostruisce una entry minimale (`CtReceiptUtils.ricostruisciRPT`) per
-    il caso "pagamento attivato dal Nodo senza una nostra RPT salvata" — qui una RPT non
-    trovata è sempre `PAA_RPT_SCONOSCIUTA`, nessuna ricostruzione. La validazione
-    semantica RT-contro-RPT implementata è semplificata ai due controlli "fatali" del
-    legacy (`creditorReferenceId`, coerenza del numero di trasferimenti) — non l'intero
-    confronto campo per campo, né il caso ibrido `RPTV2_RTV1` (RPT attivata in un
-    formato, RT arrivata nell'altro). Nessuna persistenza separata dello stato
-    `RT_RIFIUTATA_PA` quando la validazione semantica fallisce (il legacy la commit a
-    parte prima di rilanciare il fault; qui l'intera transazione viene scartata col
-    fault). Casi di minoranza, non il percorso principale.
+14. **Ricostruzione "standin" (implementata, §3undecies) e validazione semantica completa
+    non implementata** (`paSendRT`/`paSendRTV2`, 2026-10-29): il legacy, se non trova
+    un'RPT per dominio/iuv, ricostruisce una entry minimale (`CtReceiptUtils.ricostruisciRPT`)
+    per il caso "pagamento attivato dal Nodo senza una nostra RPT salvata" — **implementato
+    il 2026-10-29, vedi §3undecies**. Resta aperta solo la validazione semantica
+    RT-contro-RPT, qui semplificata ai due controlli "fatali" del legacy
+    (`creditorReferenceId`, coerenza del numero di trasferimenti) — non l'intero confronto
+    campo per campo, né il caso ibrido `RPTV2_RTV1` (RPT attivata in un formato, RT arrivata
+    nell'altro). Nessuna persistenza separata dello stato `RT_RIFIUTATA_PA` quando la
+    validazione semantica fallisce (il legacy la commit a parte prima di rilanciare il
+    fault; qui l'intera transazione viene scartata col fault). Caso di minoranza, non il
+    percorso principale.
 
 **Test**: `AcquisizioneRicevutaServiceTest` (esito OK crea pagamento/esegue la
 pendenza/accoda avvisatura, esito KO nessun side-effect, avvisatura disabilitata, voce
@@ -673,6 +669,143 @@ asserzione confronta un istante generato internamente dal servizio).
 entrambi ora in `it.govpay.pafornode.ricevuta`/`.endpoint`. 218/218 test verdi in
 govpay-common-pendenze (-5, test spostato), 105/105 in govpay-pafornode-api (+5).
 
+## 3undecies. Ricostruzione "standin" (punto aperto #14, 2026-10-29)
+
+**Decisione del committente**: il supporto allo standin non è opzionale, va implementato
+("#14 supporto standin deve esserci").
+
+**Cos'è**: un pagamento attivato direttamente al PSP tramite il Nodo dei Pagamenti,
+*senza che GovPay sia mai passato da* `paGetPayment`/`paGetPaymentV2` — la pendenza esiste
+già (creata da un altro canale), ma nessuna riga `Rpt` esiste ancora quando arriva la
+ricevuta (`paSendRT`/`paSendRTV2`). Letto `CtReceiptUtils.ricostruisciRPT`/
+`CtReceiptV2Utils.ricostruisciRPT` (`jars/core/.../utils/CtReceiptUtils.java`,
+`CtReceiptV2Utils.java` — la seconda delega alla prima con `versione=SANP_321_V2`) riga
+per riga per ricavarne il meccanismo esatto.
+
+**Trigger esatto**: non "nessuna RPT in stato `RPT_ACCETTATA_NODO`" (quello è il caso
+normale di RPT-in-attesa-non-trovata-ma-RPT-esiste), ma **nessuna RPT del modello
+`ATTIVATO_PRESSO_PSP`, di qualunque stato**, per quella pendenza — il legacy stesso cerca
+`rptBD.getRpt(codDominio, iuv, ModelloPagamento.ATTIVATO_PRESSO_PSP, null)`, filtrato per
+modello, non una ricerca generica su tutte le RPT della pendenza. Una RPT di un altro
+modello (altri canali di pagamento, es. `IMMEDIATO`/`DIFFERITO`) NON blocca lo standin. Se
+invece esiste già una RPT di questo stesso modello, anche in uno stato diverso, il legacy
+NON ricostruisce — resta `PAA_RPT_SCONOSCIUTA` com'era prima: una seconda ricevuta diversa
+non ottiene una seconda ricostruzione.
+
+   *Difetti di revisione corretti* (2026-10-29), due round distinti sullo stesso principio
+   (filtro per modello mancante), su due query diverse:
+   1. Il controllo "esiste nessuna RPT" (lo standin stesso) controllava l'esistenza di
+      QUALUNQUE RPT per la pendenza (riusando
+      `findByIdVersamentoOrderByDataMsgRichiestaAsc().isEmpty()`, senza filtro per
+      modello) — una RPT preesistente di un altro modello bloccava erroneamente lo
+      standin, diversamente dal legacy. Corretto con un nuovo metodo dedicato
+      `RptRepository#existsByIdVersamentoAndModelloPagamento(idVersamento,
+      modelloPagamento)`, filtrato come il legacy.
+   2. La ricerca della RPT in attesa (`PaSendRTService#trovaRptInAttesa`, usata PRIMA di
+      arrendersi allo standin) aveva lo stesso difetto sulla query gemella,
+      `RptRepository#findByIdVersamentoAndStato` — non filtrata per modello. Una RPT di
+      un ALTRO modello ancora nello stato `RPT_ACCETTATA_NODO` veniva quindi selezionata
+      e usata al posto della ricostruzione "standin": la ricevuta si sarebbe agganciata
+      alla RPT sbagliata (altro canale di pagamento) invece di generarne una nuova. Il
+      primo round di test non copriva questo caso: simulava la ricerca della RPT in
+      attesa come vuota a prescindere, non con una RPT di altro modello effettivamente
+      presente in quello stato. Corretto rinominando il metodo in
+      `findByIdVersamentoAndStatoAndModelloPagamento(idVersamento, stato,
+      modelloPagamento)` (unico chiamante, nessun altro consumer da aggiornare) e
+      filtrando anche questa ricerca per `ATTIVATO_PRESSO_PSP`.
+
+**Campi della RPT ricostruita** (`RptAttivazioneService#ricostruisci`, nuovo metodo,
+mirror di `attiva`/`attivaV2` ma senza `annullaPendenti` — per costruzione non esiste
+ancora nessuna RPT da annullare): `codStazione` dalla stazione di *default* del dominio
+(`DominioEntity#getStazione()`), non da una stazione autenticata — non c'è stata nessuna
+attivazione a cui agganciarsi, stessa fonte del legacy
+(`dominio.getStazione().getCodStazione()`); `codMsgRichiesta`/`iur` sono il `receiptId`
+della ricevuta in arrivo, non un valore generato (a differenza di `attiva`/`attivaV2`, che
+usano un UUID casuale per `codMsgRichiesta`); `versione` = `SANP_240` (`paSendRT`) o
+`SANP_321_V2` (`paSendRTV2`); `modelloPagamento` riusa la stessa costante
+`MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP` già usata per le attivazioni normali — non è un
+marcatore standin-vs-normale neppure nel legacy; `xmlRpt` resta `null` (nessuna richiesta
+originale da serializzare). Nessuna modifica all'entity `Rpt` né migrazione: tutti i campi
+necessari esistevano già (aggiunti per l'attivazione normale, §3octies).
+
+**Validazione semantica saltata**: il legacy la condiziona a `rpt.getXmlRpt() != null` —
+una RPT standin non ce l'ha mai, quindi la salta sempre. Stessa condizione riusata qui:
+`PaSendRTService` chiama `deserializzaDati`/`validaSemantica` solo se `rpt.getXmlRpt() !=
+null`, nessun flag booleano separato per distinguere il caso standin.
+
+**Dove vive il codice**: `RptAttivazioneService#ricostruisci` (nuovo metodo pubblico,
+accanto ad `attiva`/`attivaV2`) per la costruzione+persistenza; `PaSendRTService
+#trovaRptInAttesa`/`#standin` (nuovo metodo privato) per il trigger — la ricerca della RPT
+in attesa (`RptRepository#findByIdVersamentoAndStatoAndModelloPagamento`) e il controllo
+"esiste nessuna RPT" (`RptRepository#existsByIdVersamentoAndModelloPagamento`) sono
+ENTRAMBE filtrate per modello `ATTIVATO_PRESSO_PSP`; se nessuna RPT in attesa di questo
+modello esiste, poi nessun'altra RPT di questo modello esiste in nessuno stato,
+ricostruisce e procede, altrimenti `PAA_RPT_SCONOSCIUTA` come prima. La RPT ricostruita
+viene salvata esplicitamente (`rptRepository.save`, come già fa `attiva`/`attivaV2`) prima
+di passarla ad `AcquisizioneRicevutaService#acquisisci`, che si aspetta un'entità già
+gestita dal contesto di persistenza (nessun `save` proprio, si affida al dirty-checking
+JPA).
+
+**Test**: `RptAttivazioneServiceTest` (+3: costruzione dei campi standin, fallback
+dell'orario a "adesso" quando la ricevuta non lo riporta, rifiuto se il dominio non ha una
+stazione di default configurata), `PaSendRTServiceTest` (+4: standin V1 e V2 a lieto fine
+— verificano che `deserializzaDati`/`V2` non vengano mai chiamati — il test preesistente
+sulla RPT sconosciuta riadattato al nuovo trigger filtrato per modello, un test con una
+RPT esistente di un ALTRO modello che non blocca lo standin, e un test dedicato per il
+secondo difetto con quella RPT di altro modello effettivamente nello stato
+`RPT_ACCETTATA_NODO`), `PaForNodeEndpointTest` (+2: stessi due scenari "RPT preesistente
+di altro modello" — uno in uno stato qualunque, uno specificamente in
+`RPT_ACCETTATA_NODO` — a livello di integrazione SOAP con righe `Rpt` realmente
+persistite, per dimostrare che i filtri funzionano a livello di query reale, non solo
+nell'aspettativa del mock: il secondo verifica anche che la riga di altro modello resti
+intatta e che la ricevuta generi una RPT standin nuova, non si aggancia a quella
+esistente). Richiesto anche collegare il `DominioEntity` di fixture alla sua
+`StazioneEntity` di default (`creaAnagrafiche`/`pulisci` in `PaForNodeEndpointTest`):
+letta da `RptAttivazioneService#ricostruisci`, non serviva prima. 119/119 test verdi in
+govpay-pafornode-api (+9 rispetto a §3decies).
+
+## 3duodecies. Rischio NPE su `transferCategory` per il bollo (punto aperto #13, 2026-10-29)
+
+**Diagnosi iniziale corretta da revisione**: avevo inizialmente concluso che "il bollo non
+ha contabilità, quindi nessun fallback possibile" — sbagliato. Il contratto EC (schema
+`Bollo`, `govpay-api-schemas.yaml` v2) richiede `codiceTassonomicoPagoPA` come campo
+**obbligatorio** anche per il bollo (non un tributo: la tassonomia stessa è la
+classificazione). `VocePendenza.getTassonomia()`/`setTassonomia()` non sono una colonna
+propria: sono un accessor derivato che spacchetta/compone `tipoContabilita`+
+`codiceContabilita` sullo stesso formato `tipo/codice` che `transferCategory` costruisce —
+se la tassonomia è valorizzata correttamente, `ContabilitaResolver` non va mai in NPE. Il
+problema è solo un dato storico incompleto (tassonomia assente o parziale già persistita),
+non una proprietà intrinseca del bollo. Anche il legacy costruisce `transferCategory`
+sempre con tipo+codice contabilità, senza eccezione per il bollo — nessun'esenzione da
+replicare.
+
+**Due correzioni, non una**, per lo stesso principio del resto della sessione (dato
+incompleto rifiutato alla fonte, non mascherato a valle):
+
+1. **`ValidatorePosizioneDebitoria`** (govpay-common-pendenze), nuovo controllo
+   `validaTassonomiaBollo`: una voce `BOLLO` senza `tipoContabilita`/`codiceContabilita`
+   entrambi presenti è rifiutata. Chiamato da `validaPendenza`, quindi coperto sia in
+   creazione (`PosizioneDebitoriaService#crea`) sia in aggiornamento
+   (`#aggiornaPendenza`, che instrada su `#aggiorna` → `ValidatorePosizioneDebitoria
+   #valida`) — un solo punto di controllo per entrambi i percorsi.
+2. **`ContabilitaResolver`** (govpay-pafornode-api), nuovo metodo `transferCategory(voce,
+   tributo)` che sostituisce il pattern `risolvi(...)` + concatenazione diretta nei due
+   builder (V1 e V2, unici due chiamanti): verifica ESPLICITAMENTE che **entrambi** i
+   componenti siano risolvibili prima di costruire la stringa — con un solo componente
+   assente il risultato sarebbe una stringa incoerente come `"9/null"`, non un fallimento,
+   se si controllasse solo uno dei due. Fallisce con `IllegalStateException` (id della
+   voce nel messaggio), non più con `NullPointerException`. Nessun valore di default,
+   nessuna omissione automatica di `transferCategory` per il bollo.
+
+**Test**: `ValidatorePosizioneDebitoriaTest` (+3: bollo senza tassonomia rifiutato, bollo
+con un solo componente della tassonomia rifiutato, bollo con tassonomia completa accettato
+senza bisogno di un tributo), nuovo `ContabilitaResolverTest` (5 test unitari su
+`transferCategory`: dalla voce, dal tributo, nessuna fonte, solo tipo, solo codice — questi
+ultimi due a dimostrare che entrambi i componenti sono verificati separatamente),
+`CtPaymentPaV2BuilderTest` (+1: una voce di bollo senza tassonomia fallisce con
+`IllegalStateException`, non più con NPE). 221/221 test verdi in govpay-common-pendenze
+(+3), 125/125 in govpay-pafornode-api (+6 rispetto a §3undecies).
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -757,30 +890,27 @@ govpay-common-pendenze (-5, test spostato), 105/105 in govpay-pafornode-api (+5)
     - **Non replicato**: il fallback "tipo versamento di default" non esiste nemmeno nel
       legacy (nessun fallback), quindi nessuna azione qui; l'ambiguità fra più applicazioni
       che soddisfano entrambe le condizioni non è gestita (vince la prima, come nel legacy).
-11. **Spedizione effettiva della notifica di attivazione** (analizzato 2026-10-29): il
-    legacy (`InviaNotificaThread`, `jars/core/.../utils/thread/InviaNotificaThread.java`)
-    invia la notifica di `ATTIVAZIONE` con l'operazione **`notifyPagamento`** (POST
-    `/pagamenti/{codDominio}/{iuv}`, contratto EC **V1**, bean `it.govpay.ec.v1.beans.Notifica`)
-    — **non** la stessa operazione `notificaRicevuta` già generata in `govpay-ec-client`
-    (quella è per `TipoNotifica.RICEVUTA`, connettore V2, e per V2 l'ATTIVAZIONE non viene
-    proprio spedita: `inserisciNotifica` la scarta se il connettore non è `GP_REST_01`).
-    Errore di invio → stato resta `DA_SPEDIRE` con backoff quadratico e retry differito via
-    un batch dedicato (`Operazioni.spedizioneNotifiche`), non un retry immediato nel thread.
-    **Blocco reale**: `govpay-ec-client` oggi genera solo il contratto v2 (`notificaRicevuta`/
-    `notificaRendicontazione`/`getAvviso`/`verifyPendenza`) — l'operazione `notifyPagamento`
-    (V1, quella che serve per ATTIVAZIONE) non è generata. Implementarla richiederebbe
-    aggiungere quel contratto V1 a `govpay-ec-client` (o scrivere un client ad-hoc in
-    `pafornode-api`) per un'operazione che il legacy stesso tratta come propria di un
-    client "V1" più vecchio rispetto a quello usato per RICEVUTA. **Non ancora deciso con
-    il committente**: replicare fedelmente il contratto V1 legacy, o la nuova generazione ha
-    un piano diverso per notificare l'attivazione alle applicazioni (es. solo V2/RICEVUTA,
-    lasciando l'ATTIVAZIONE come solo accodamento senza spedizione)?
+11. ~~Spedizione effettiva della notifica di attivazione~~ — **risolto, deciso con il
+    committente (2026-10-29): si tiene solo il contratto EC v2, quindi nessuna notifica di
+    attivazione viene spedita.** Il legacy (`InviaNotificaThread`,
+    `jars/core/.../utils/thread/InviaNotificaThread.java`) invia la notifica di
+    `ATTIVAZIONE` con l'operazione `notifyPagamento` (POST `/pagamenti/{codDominio}/{iuv}`,
+    contratto EC **v1**, bean `it.govpay.ec.v1.beans.Notifica`) — mai generata né prevista in
+    `govpay-ec-client` (solo v2: `notificaRicevuta`/`notificaRendicontazione`/`getAvviso`/
+    `verifyPendenza`), e non c'è un equivalente v2: per un connettore v2 il legacy stesso
+    scarta l'ATTIVAZIONE (`inserisciNotifica`, se il connettore non è `GP_REST_01`). Nessun
+    nuovo codice richiesto da questa decisione: `NotificaAttivazioneService#accoda` già
+    replica fedelmente questo scarto (accoda solo se il connettore applicativo è
+    `VersioneApi.REST_1`, mai per v2) — resta "solo accodamento" per costruzione, non
+    un gap temporaneo da chiudere in futuro.
 12. ~~Metadati di contabilità/custom per transfer su `paGetPaymentV2`~~ — **risolto**
     (2026-10-29): non un adattamento del JSON legacy, ma la mappatura diretta sul
     Dizionario dei metadata pagoPA ufficiale che il modello v3-nativo già implementa
     (`DettaglioContabile`, chiavi `RC_*` documentate nel suo stesso Javadoc) — vedi
     §3septies per il dettaglio completo.
-13. **Rischio NPE su `transferCategory` per una voce di bollo senza contabilità** (§3septies,
-    2026-10-29): riprodotto in test, non corretto nel codice (stessa chiamata incondizionata
-    del legacy) — non verificato se il legacy stesso vada in NPE nello stesso scenario, o se
-    una voce di bollo reale porti sempre `tipoContabilita`/`codiceContabilita` per altra via.
+13. ~~Rischio NPE su `transferCategory` per una voce di bollo senza contabilità~~ —
+    **risolto** (§3duodecies, 2026-10-29): non è un'esenzione per il bollo (si classifica
+    tramite tassonomia, obbligatoria per contratto EC, non tramite tributo) — validazione
+    aggiunta in `ValidatorePosizioneDebitoria` (creazione e aggiornamento) più un controllo
+    esplicito in `ContabilitaResolver#transferCategory` (entrambi i componenti, non solo
+    uno) per i dati storici già incompleti.

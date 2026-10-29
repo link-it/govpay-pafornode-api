@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 
 import jakarta.persistence.EntityManager;
@@ -36,6 +37,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.client.RestTemplate;
 
 import it.govpay.pendenze.entity.Pendenza;
+import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.repository.PendenzaRepository;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
@@ -152,12 +154,17 @@ class PaForNodeEndpointTest {
 				.abilitato(true)
 				.build());
 
-		stazioneRepository.save(StazioneEntity.builder()
+		StazioneEntity stazione = stazioneRepository.save(StazioneEntity.builder()
 				.codStazione(COD_STAZIONE)
 				.abilitato(true)
 				.applicationCode(1)
 				.intermediario(intermediario)
 				.build());
+
+		// Stazione di default del dominio: letta da RptAttivazioneService#ricostruisci per
+		// la ricostruzione "standin" (vedi §3undecies del design doc).
+		dominio.setStazione(stazione);
+		dominioRepository.save(dominio);
 
 		// Serve una riga reale in anagrafica: AcquisizioneRicevutaService#acquisisci (via
 		// PosizioneDebitoriaService#registraEsitoPendenza) risolve codApplicazione da
@@ -174,9 +181,11 @@ class PaForNodeEndpointTest {
 
 	@AfterEach
 	void pulisci() {
+		// Dominio prima di stazione: dal momento che il dominio ha una FK verso la sua
+		// stazione di default, cancellarla prima lascerebbe un riferimento pendente.
+		dominioRepository.deleteAll();
 		stazioneRepository.deleteAll();
 		intermediarioRepository.deleteAll();
-		dominioRepository.deleteAll();
 		applicazioneRepository.deleteAll();
 	}
 
@@ -515,6 +524,91 @@ class PaForNodeEndpointTest {
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RPT_SCONOSCIUTA</faultCode>");
+	}
+
+	/**
+	 * Una RPT preesistente di un ALTRO modello di pagamento (non {@code ATTIVATO_PRESSO_PSP},
+	 * qui simulato con {@code IMMEDIATO}, codifica legacy "0") non deve bloccare la
+	 * ricostruzione "standin": nessuna attivazione (nessuna RPT del modello PSP) e' mai
+	 * avvenuta per questa pendenza, stesso filtro per modello del legacy
+	 * ({@code rptBD.getRpt(..., ModelloPagamento.ATTIVATO_PRESSO_PSP, null)}).
+	 */
+	@Test
+	void paSendRTRicostruisceStandinAncheConUnaRptPreesistenteDiAltroModello() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-standin-altro-modello", 16.00);
+		Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(idDominio, identificativi.iuv()).orElseThrow();
+
+		Rpt altroModello = new Rpt();
+		altroModello.setIdVersamento(pendenza.getId());
+		altroModello.setIuv(identificativi.iuv());
+		altroModello.setIur("altro-" + identificativi.iuv());
+		altroModello.setCodDominio(COD_DOMINIO);
+		altroModello.setCodStazione(COD_STAZIONE);
+		altroModello.setCodMsgRichiesta("msg-altro-" + identificativi.iuv());
+		altroModello.setStato("RPT_RIFIUTATA_NODO");
+		altroModello.setVersione("SANP_240");
+		altroModello.setModelloPagamento("0");
+		OffsetDateTime adesso = OffsetDateTime.now();
+		altroModello.setDataMsgRichiesta(adesso);
+		altroModello.setDataAggiornamentoStato(adesso);
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			entityManager.persist(altroModello);
+			entityManager.flush();
+		});
+
+		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ? and ccp = ?", String.class,
+				identificativi.iuv(), "receipt-" + identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+	}
+
+	/**
+	 * Come {@link #paSendRTRicostruisceStandinAncheConUnaRptPreesistenteDiAltroModello}, ma
+	 * con la RPT di altro modello effettivamente nello stato {@code RPT_ACCETTATA_NODO} (non
+	 * solo in un altro stato generico): senza il filtro per modello anche sulla ricerca della
+	 * RPT in attesa, questa riga verrebbe selezionata ed usata al posto della ricostruzione
+	 * "standin" — la ricevuta finirebbe agganciata alla RPT sbagliata (altro canale di
+	 * pagamento) invece di generarne una nuova.
+	 */
+	@Test
+	void paSendRTRicostruisceStandinAncheConUnaRptDiAltroModelloGiaAccettataDalNodo() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-standin-altro-accettata", 16.00);
+		Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(idDominio, identificativi.iuv()).orElseThrow();
+
+		Rpt altroModello = new Rpt();
+		altroModello.setIdVersamento(pendenza.getId());
+		altroModello.setIuv(identificativi.iuv());
+		altroModello.setIur("altro-" + identificativi.iuv());
+		altroModello.setCodDominio(COD_DOMINIO);
+		altroModello.setCodStazione(COD_STAZIONE);
+		altroModello.setCodMsgRichiesta("msg-altro-" + identificativi.iuv());
+		altroModello.setStato("RPT_ACCETTATA_NODO");
+		altroModello.setVersione("SANP_240");
+		altroModello.setModelloPagamento("0");
+		OffsetDateTime adesso = OffsetDateTime.now();
+		altroModello.setDataMsgRichiesta(adesso);
+		altroModello.setDataAggiornamentoStato(adesso);
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			entityManager.persist(altroModello);
+			entityManager.flush();
+		});
+
+		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		// La ricevuta deve aver creato una RPT NUOVA (standin), non essersi agganciata alla
+		// riga di altro modello: quella resta intatta, ancora RPT_ACCETTATA_NODO.
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ? and ccp = ?", String.class,
+				identificativi.iuv(), "receipt-" + identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ? and ccp = ?", String.class,
+				identificativi.iuv(), "altro-" + identificativi.iuv())).isEqualTo("RPT_ACCETTATA_NODO");
+		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
+				identificativi.iuv())).isEqualTo(2);
 	}
 
 	@Test

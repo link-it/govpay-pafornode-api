@@ -44,14 +44,12 @@ import it.govpay.pendenze.service.CausaleVersamentoCodec;
  * sia nel ramo IBAN sia nel ramo bollo.</li>
  * </ol>
  *
- * <p><b>Rischio noto, non corretto</b>: {@code transferCategory} si calcola allo stesso modo
- * per ogni transfer, bollo compreso (stessa chiamata incondizionata del legacy,
- * {@code CtPaymentPAV2Builder.java:312}) — una voce di bollo senza {@code tipoContabilita}/
- * {@code codiceContabilita} propri e senza tributo (nessun fallback possibile) fa fallire
- * questo metodo con {@code NullPointerException} su {@code ContabilitaResolver.TipoCodice
- * .tipo().getCodifica()} (verificato riproducendo lo scenario in test, poi corretto nella
- * fixture, non nel codice). Non verificato se il legacy stesso vada in NPE nello stesso
- * scenario o se una voce di bollo reale porti sempre questi valori per altra via.
+ * <p>{@code transferCategory} si calcola allo stesso modo per ogni transfer, bollo
+ * compreso ({@link ContabilitaResolver#transferCategory}): per il bollo la tassonomia
+ * ({@code tipoContabilita}/{@code codiceContabilita}) e' l'unica classificazione ammessa
+ * (nessun tributo), validata obbligatoria in scrittura da {@code
+ * ValidatorePosizioneDebitoria} — un dato storico incompleto fallisce comunque qui con un
+ * errore esplicito, non con una stringa incoerente.
  *
  * <p><b>Metadati di contabilita'/custom per transfer</b> da {@code
  * VocePendenza.getDettaglioContabile()}: non e' una replica del vecchio JSON legacy
@@ -140,8 +138,7 @@ public class CtPaymentPaV2Builder {
 
 			transfer.setRemittanceInformation(RemittanceInformationBuilder.costruisci(pendenza.getIuv(),
 					BigDecimal.valueOf(voce.getImporto()), voce.getDescrizione(), voce.getDescrizioneCausaleRpt()));
-			ContabilitaResolver.TipoCodice contabilita = ContabilitaResolver.risolvi(voce, tributo);
-			transfer.setTransferCategory(contabilita.tipo().getCodifica() + "/" + contabilita.codice());
+			transfer.setTransferCategory(ContabilitaResolver.transferCategory(voce, tributo));
 
 			CtMetadata metadata = metadataDettaglioContabile(voce.getDettaglioContabile());
 			if (applicaQuotaSend) {

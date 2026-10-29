@@ -99,8 +99,7 @@ public class CtPaymentPaBuilder {
 
 			transfer.setRemittanceInformation(RemittanceInformationBuilder.costruisci(pendenza.getIuv(),
 					BigDecimal.valueOf(voce.getImporto()), voce.getDescrizione(), voce.getDescrizioneCausaleRpt()));
-			ContabilitaResolver.TipoCodice contabilita = ContabilitaResolver.risolvi(voce, tributo);
-			transfer.setTransferCategory(contabilita.tipo().getCodifica() + "/" + contabilita.codice());
+			transfer.setTransferCategory(ContabilitaResolver.transferCategory(voce, tributo));
 
 			if (applicaQuotaSend) {
 				transfer.setMetadata(metadataSpeseNotifica(pendenza.getSendImportoTotale()));

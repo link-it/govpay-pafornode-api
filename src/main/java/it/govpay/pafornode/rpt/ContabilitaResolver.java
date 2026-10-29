@@ -27,4 +27,23 @@ public final class ContabilitaResolver {
 				: (tributo != null ? tributo.getCodiceContabilita() : null);
 		return new TipoCodice(tipo, codice);
 	}
+
+	/**
+	 * Come {@link #risolvi}, ma restituisce direttamente la stringa {@code
+	 * transferCategory} ({@code tipo/codice}) — richiede ENTRAMBI i componenti: con un solo
+	 * componente assente il risultato sarebbe una stringa incoerente (es. {@code "9/null"})
+	 * invece di un fallimento esplicito.
+	 *
+	 * @throws IllegalStateException se {@code tipoContabilita}/{@code codiceContabilita} non
+	 *                                sono risolvibili entrambi (voce e tributo, se presente)
+	 */
+	public static String transferCategory(VocePendenza voce, TributoEntity tributo) {
+		TipoCodice contabilita = risolvi(voce, tributo);
+		if (contabilita.tipo() == null || contabilita.codice() == null) {
+			throw new IllegalStateException("la voce [" + voce.getIdVocePendenza() + "] non ha una classificazione "
+					+ "contabile risolvibile (tipoContabilita/codiceContabilita assenti su voce e tributo): "
+					+ "transferCategory non costruibile.");
+		}
+		return contabilita.tipo().getCodifica() + "/" + contabilita.codice();
+	}
 }

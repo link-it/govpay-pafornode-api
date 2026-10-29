@@ -33,10 +33,17 @@ ora implementati e cablati su `paGetPayment` (`SendClient`/`VerificaClient`/
 `PendenzaVerificataMapper`/`ApplicazioneDominioResolver`/`AttualizzazionePendenzaService`).
 **`paGetPayment` (V1) è quindi completo per tutti i casi analizzati**, salvo: il punto aperto
 #9 (nessuno dei tre rami ancora cablato su `paVerifyPaymentNotice`, che resta
-`@Transactional(readOnly = true)`), il punto aperto #11 (spedizione effettiva della notifica
-di attivazione — resta solo accodamento), e il punto aperto #1 (autenticazione X.509,
-infrastruttura/deployment, fuori scope applicativo) — nessuno dei tre blocca
-`paGetPaymentV2`, il cui piano va comunque confermato separatamente con il committente.
+`@Transactional(readOnly = true)` — spostato in fondo ai lavori dell'issue, non blocca più
+`paGetPaymentV2`), il punto aperto #11 (spedizione effettiva della notifica di attivazione —
+resta solo accodamento), e il punto aperto #1 (autenticazione X.509, infrastruttura/
+deployment, fuori scope applicativo).
+
+**`paGetPaymentV2` implementato** (§3septies, 2026-10-29): stessa infrastruttura di
+`paGetPayment` (riusata senza modifiche), nuovo `CtPaymentPaV2Builder`/
+`PaGetPaymentV2ActivationService`, inclusi i metadati di contabilità/custom per transfer
+(mappatura su `DettaglioContabile`, chiavi `RC_*` del Dizionario dei metadata pagoPA —
+punto #12 risolto). Resta solo il punto aperto #13 (rischio NPE non corretto su una voce di
+bollo senza contabilità propria).
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -372,6 +379,71 @@ acquisizione di una pendenza DEL TUTTO ASSENTE (punto aperto #10); attualizzazio
 cablata su `paVerifyPaymentNotice` (punto aperto #9); infrastruttura di autenticazione X.509
 (punto aperto #1, questione di deployment, non di codice applicativo).
 
+## 3septies. `paGetPaymentV2` (implementato, 2026-10-29)
+
+Letto per intero `PagamentiTelematiciCCPImpl.paGetPaymentV2` (righe 1283-1591) e
+`CtPaymentPAV2Builder` (`jars/core/.../CtPaymentPAV2Builder.java`, 367 righe) e confrontati
+con `paGetPayment`/`CtPaymentPaBuilder` riga per riga.
+
+**Risultato chiave**: `paGetPaymentV2` e' identico a `paGetPayment` fino alla risoluzione/
+attualizzazione della pendenza (stesso codice, verificato) — tutta l'infrastruttura già
+costruita per V1 (`PaForNodeChecks`, `AttualizzazionePendenzaService`,
+`ApplicazioneDominioResolver`, `NotificaAttivazioneService`, lock pessimistico,
+annullamento RPT pendenti) è riusata senza modifiche da `PaGetPaymentV2ActivationService`
+(nuovo). Le uniche differenze reali, tutte nella costruzione del payload
+(`CtPaymentPaV2Builder`, nuovo):
+
+- **Nessun rifiuto preventivo della Marca da Bollo Telematica**: V1 la rifiuta a monte
+  (`PAA_SEMANTICA`); V2 la gestisce per singolo transfer — se una voce non ha un IBAN
+  risolvibile (ne' da tributo ne' diretto, stessa risoluzione di {@code
+  IbanAccreditoResolver}), diventa `CtRichiestaMarcaDaBollo` (`hashDocumento` decodificato da
+  base64, `provinciaResidenza`, `tipoBollo` con fallback a `"01"` — unico valore del legacy
+  `TipoBollo.IMPOSTA_BOLLO` — se la voce non lo specifica).
+- **`companyName` sul singolo transfer** (non solo sul pagamento complessivo), sia nel ramo
+  IBAN sia nel ramo bollo — `CtTransferPAV2` ha questo campo, `CtTransferPA` (V1) no.
+- **Nuovi campi RPT**: `codCarrello` (da `request.getPaymentNote()`, troncato a 35 caratteri,
+  stesso limite del legacy) e versione `SANP_321_V2` invece di `SANP_240` — entrambi i campi
+  esistevano già sull'entity `Rpt` (estensione fatta in una sessione precedente, in previsione
+  di V2).
+- Multibeneficiario: nessuna logica nuova, `IbanAccreditoResolver`/`ContabilitaResolver`
+  (V1) già generalizzano correttamente voce-per-voce/dominio-per-dominio.
+
+**Rischio noto, non corretto** (documentato nel Javadoc di `CtPaymentPaV2Builder`):
+`transferCategory` si calcola allo stesso modo per ogni transfer, bollo compreso (stessa
+chiamata incondizionata del legacy) — una voce di bollo senza `tipoContabilita`/
+`codiceContabilita` propri e senza tributo fa fallire con `NullPointerException` (riprodotto
+in test, poi corretto nella fixture di test, non nel codice — non verificato se il legacy
+stesso vada in NPE nello stesso scenario o se una voce di bollo reale porti sempre questi
+valori per altra via).
+
+**Metadati di contabilità/custom per transfer — implementato** (2026-10-29): **non** è un
+adattamento del vecchio JSON legacy (`QuotaContabilita`) — il modello v3-nativo lo ha
+deliberatamente **sostituito** con il sealed interface `DettaglioContabile`, mappato
+direttamente sul Dizionario dei metadata pagoPA ufficiale (sezione "Riconciliazione
+contabile", issue #877 dello YAML v3, §14 di `proposta-modello-nativo-v3.md` di
+govpay-common-pendenze) — le chiavi `RC_*` sono documentate nel Javadoc di ciascuna
+variante di `DettaglioContabile` stesso:
+
+- `CorrispettivoDl118` → `RC_AC`/`RC_CU`/`RC_CAP`/`RC_ACC`/`RC_ART`/`RC_PF5`/`RC_IMP`.
+- `IncassoTipico` → `RC_AC`/`RC_CU`/`RC_TI`/`RC_EF`/`RC_ND`/`RC_IMP`.
+- `Civilistico` → `RC_AC`/`RC_CU`/`RC_CON`/`RC_COM`/`RC_ND`/`RC_IMP`.
+- `SpeseNotifica` → stessa chiave `NOTIFICATION_FEE` della quota SEND automatica (**deciso
+  con il committente**: centesimi, intero, stesso formato) — mutuamente esclusive per
+  costruzione dei dati, non per logica aggiunta qui: se una voce ha `SpeseNotifica`,
+  `pendenza.isSendAbilitato()` è necessariamente `false` (vincolo di
+  `ValidatorePosizioneDebitoria`), quindi `sendImportoTotale` resta `null` e la quota
+  automatica non scatta mai.
+- `Sconosciuto` (`UNKNOWN_ENTRIES`) → entry grezze chiave/valore, pass-through.
+
+`VocePendenza.getDettaglioContabile()` è una **lista** (come il vecchio multi-quota
+legacy, ma tipizzata): ogni elemento produce le proprie entry, unite alla quota SEND se
+pertinente sullo stesso transfer. 4 nuovi test in `CtPaymentPaV2BuilderTest`.
+
+**Test**: `CtPaymentPaV2BuilderTest` (4 test: IBAN da tributo, voce senza IBAN→bollo,
+fallback tipo bollo, quota SEND+metadata) e due nuovi test di integrazione SOAP in
+`PaForNodeEndpointTest` (attivazione con successo verificando anche `versione=SANP_321_V2`
+sulla riga RPT, fault per pendenza sconosciuta). 73/73 test verdi in tutto il modulo.
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -467,3 +539,12 @@ cablata su `paVerifyPaymentNotice` (punto aperto #9); infrastruttura di autentic
     il committente**: replicare fedelmente il contratto V1 legacy, o la nuova generazione ha
     un piano diverso per notificare l'attivazione alle applicazioni (es. solo V2/RICEVUTA,
     lasciando l'ATTIVAZIONE come solo accodamento senza spedizione)?
+12. ~~Metadati di contabilità/custom per transfer su `paGetPaymentV2`~~ — **risolto**
+    (2026-10-29): non un adattamento del JSON legacy, ma la mappatura diretta sul
+    Dizionario dei metadata pagoPA ufficiale che il modello v3-nativo già implementa
+    (`DettaglioContabile`, chiavi `RC_*` documentate nel suo stesso Javadoc) — vedi
+    §3septies per il dettaglio completo.
+13. **Rischio NPE su `transferCategory` per una voce di bollo senza contabilità** (§3septies,
+    2026-10-29): riprodotto in test, non corretto nel codice (stessa chiamata incondizionata
+    del legacy) — non verificato se il legacy stesso vada in NPE nello stesso scenario, o se
+    una voce di bollo reale porti sempre `tipoContabilita`/`codiceContabilita` per altra via.

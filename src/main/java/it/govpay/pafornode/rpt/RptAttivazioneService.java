@@ -19,8 +19,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
 import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.StazioneEntity;
@@ -33,8 +35,10 @@ import it.govpay.pendenze.repository.RptRepository;
  * Attivazione di una RPT (analisi completa del legacy, {@code CtPaymentPABuilder}/
  * {@code it.govpay.core.business.Rpt#annullaRPTPendenti}, nel design doc): annulla le RPT
  * pendenti sulla stessa coppia dominio/iuv, poi persiste la nuova RPT con l'XML della
- * risposta serializzato (per {@code paGetPayment}, V1 — l'omologo V2 serializza
- * {@code PaGetPaymentV2Response}, non ancora implementato).
+ * risposta serializzato — {@link #attiva}/{@link #deserializzaDati} per {@code paGetPayment}
+ * (V1, {@code CtPaymentPA}), {@link #attivaV2}/{@link #deserializzaDatiV2} per {@code
+ * paGetPaymentV2} ({@code CtPaymentPAV2}, versione RPT {@code SANP_321_V2}, {@code
+ * codCarrello}).
  */
 @Service
 public class RptAttivazioneService {
@@ -43,12 +47,14 @@ public class RptAttivazioneService {
 	public static final String MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP = "4";
 
 	private static final String VERSIONE_SANP_240 = "SANP_240";
+	private static final String VERSIONE_SANP_321_V2 = "SANP_321_V2";
 
 	private final PendenzaRepository pendenzaRepository;
 	private final RptRepository rptRepository;
 	private final Clock clock;
 	private final ObjectFactory objectFactory = new ObjectFactory();
 	private final JAXBContext jaxbContext;
+	private final JAXBContext jaxbContextV2;
 
 	public RptAttivazioneService(PendenzaRepository pendenzaRepository, RptRepository rptRepository, Clock clock) {
 		this.pendenzaRepository = pendenzaRepository;
@@ -56,6 +62,7 @@ public class RptAttivazioneService {
 		this.clock = clock;
 		try {
 			this.jaxbContext = JAXBContext.newInstance(PaGetPaymentRes.class);
+			this.jaxbContextV2 = JAXBContext.newInstance(PaGetPaymentV2Response.class);
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
 		}
@@ -74,6 +81,27 @@ public class RptAttivazioneService {
 	@Transactional
 	public Rpt attiva(Pendenza pendenza, DominioEntity dominio, StazioneEntity stazione, String ccp,
 			CtPaymentPA ctPayment) {
+		Rpt rpt = nuovaRptAttivata(pendenza, dominio, stazione, ccp, VERSIONE_SANP_240, null);
+		rpt.setXmlRpt(serializza(ctPayment));
+		return rptRepository.save(rpt);
+	}
+
+	/**
+	 * Come {@link #attiva}, per {@code paGetPaymentV2}: versione RPT {@code SANP_321_V2},
+	 * payload {@code CtPaymentPAV2} (puo' contenere Marca da Bollo Telematica/metadati,
+	 * assenti da {@code CtPaymentPA}), e {@code codCarrello} dalla richiesta (gia' troncato
+	 * a 35 caratteri dal chiamante, stesso limite del legacy).
+	 */
+	@Transactional
+	public Rpt attivaV2(Pendenza pendenza, DominioEntity dominio, StazioneEntity stazione, String ccp,
+			String codCarrello, CtPaymentPAV2 ctPayment) {
+		Rpt rpt = nuovaRptAttivata(pendenza, dominio, stazione, ccp, VERSIONE_SANP_321_V2, codCarrello);
+		rpt.setXmlRpt(serializzaV2(ctPayment));
+		return rptRepository.save(rpt);
+	}
+
+	private Rpt nuovaRptAttivata(Pendenza pendenza, DominioEntity dominio, StazioneEntity stazione, String ccp,
+			String versione, String codCarrello) {
 		pendenzaRepository.findByIdForUpdate(pendenza.getId())
 				.orElseThrow(() -> new IllegalStateException("Pendenza [" + pendenza.getId() + "] non trovata."));
 
@@ -87,7 +115,8 @@ public class RptAttivazioneService {
 		rpt.setCodDominio(dominio.getCodDominio());
 		rpt.setCodStazione(stazione.getCodStazione());
 		rpt.setCodMsgRichiesta(UUID.randomUUID().toString().replace("-", ""));
-		rpt.setVersione(VERSIONE_SANP_240);
+		rpt.setVersione(versione);
+		rpt.setCodCarrello(codCarrello);
 		// Stato finale di una attivazione riuscita, non l'intermedio RPT_ATTIVATA: nel legacy
 		// la RPT passa a RPT_ACCETTATA_NODO prima del commit (qui non c'e' un invio asincrono
 		// separato da attendere, l'intera operazione e' nella stessa transazione).
@@ -95,8 +124,7 @@ public class RptAttivazioneService {
 		rpt.setDataMsgRichiesta(adesso);
 		rpt.setDataAggiornamentoStato(adesso);
 		rpt.setModelloPagamento(MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
-		rpt.setXmlRpt(serializza(ctPayment));
-		return rptRepository.save(rpt);
+		return rpt;
 	}
 
 	/**
@@ -115,6 +143,18 @@ public class RptAttivazioneService {
 			// attesa fa risolvere l'elemento tramite l'@XmlElementDecl di ObjectFactory.
 			JAXBElement<PaGetPaymentRes> risultato = unmarshaller
 					.unmarshal(new StreamSource(new ByteArrayInputStream(rpt.getXmlRpt())), PaGetPaymentRes.class);
+			return risultato.getValue().getData();
+		} catch (JAXBException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	/** Come {@link #deserializzaDati}, per {@code paGetPaymentV2}. */
+	public CtPaymentPAV2 deserializzaDatiV2(Rpt rpt) {
+		try {
+			Unmarshaller unmarshaller = jaxbContextV2.createUnmarshaller();
+			JAXBElement<PaGetPaymentV2Response> risultato = unmarshaller.unmarshal(
+					new StreamSource(new ByteArrayInputStream(rpt.getXmlRpt())), PaGetPaymentV2Response.class);
 			return risultato.getValue().getData();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
@@ -144,6 +184,20 @@ public class RptAttivazioneService {
 			Marshaller marshaller = jaxbContext.createMarshaller();
 			ByteArrayOutputStream output = new ByteArrayOutputStream();
 			marshaller.marshal(objectFactory.createPaGetPaymentRes(risposta), output);
+			return output.toByteArray();
+		} catch (JAXBException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	private byte[] serializzaV2(CtPaymentPAV2 ctPayment) {
+		PaGetPaymentV2Response risposta = new PaGetPaymentV2Response();
+		risposta.setOutcome(StOutcome.OK);
+		risposta.setData(ctPayment);
+		try {
+			Marshaller marshaller = jaxbContextV2.createMarshaller();
+			ByteArrayOutputStream output = new ByteArrayOutputStream();
+			marshaller.marshal(objectFactory.createPaGetPaymentV2Response(risposta), output);
 			return output.toByteArray();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);

@@ -22,6 +22,8 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtQrCode;
 import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.StAmountOption;
@@ -37,6 +39,7 @@ import it.govpay.common.repository.UnitaOperativaRepository;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.rpt.PaGetPaymentActivationService;
+import it.govpay.pafornode.rpt.PaGetPaymentV2ActivationService;
 import it.govpay.pafornode.rpt.UnitaOperativaResolver;
 import it.govpay.pafornode.rpt.XmlDateUtils;
 import it.govpay.pendenze.entity.Pendenza;
@@ -71,6 +74,7 @@ public class PaForNodeEndpoint {
 	private final PendenzaRepository pendenzaRepository;
 	private final PagamentoRepository pagamentoRepository;
 	private final PaGetPaymentActivationService paGetPaymentActivationService;
+	private final PaGetPaymentV2ActivationService paGetPaymentV2ActivationService;
 	private final Clock clock;
 	private final List<String> navSondaPagoPA;
 	private final ObjectFactory objectFactory = new ObjectFactory();
@@ -78,7 +82,8 @@ public class PaForNodeEndpoint {
 	public PaForNodeEndpoint(DominioRepository dominioRepository, IntermediarioRepository intermediarioRepository,
 			StazioneRepository stazioneRepository, UnitaOperativaRepository unitaOperativaRepository,
 			PendenzaRepository pendenzaRepository, PagamentoRepository pagamentoRepository,
-			PaGetPaymentActivationService paGetPaymentActivationService, Clock clock,
+			PaGetPaymentActivationService paGetPaymentActivationService,
+			PaGetPaymentV2ActivationService paGetPaymentV2ActivationService, Clock clock,
 			@Value("#{'${govpay.pafornode.sonda-nav:}'.split(',')}") List<String> navSondaPagoPA) {
 		this.dominioRepository = dominioRepository;
 		this.intermediarioRepository = intermediarioRepository;
@@ -87,6 +92,7 @@ public class PaForNodeEndpoint {
 		this.pendenzaRepository = pendenzaRepository;
 		this.pagamentoRepository = pagamentoRepository;
 		this.paGetPaymentActivationService = paGetPaymentActivationService;
+		this.paGetPaymentV2ActivationService = paGetPaymentV2ActivationService;
 		this.clock = clock;
 		this.navSondaPagoPA = navSondaPagoPA;
 	}
@@ -171,6 +177,41 @@ public class PaForNodeEndpoint {
 
 	private static PaGetPaymentRes buildFaultGetPayment(NdpException e) {
 		PaGetPaymentRes response = new PaGetPaymentRes();
+		response.setOutcome(StOutcome.KO);
+		CtFaultBean fault = new CtFaultBean();
+		fault.setId(e.getCodDominio());
+		fault.setFaultCode(e.getFault().name());
+		fault.setFaultString(e.getFault().getFaultString());
+		fault.setDescription(e.getDescrizione());
+		response.setFault(fault);
+		return response;
+	}
+
+	/**
+	 * Stessa struttura di {@link #paGetPayment}: non transazionale, l'intera operazione e'
+	 * dentro {@link PaGetPaymentV2ActivationService}. A differenza di {@link #paGetPayment},
+	 * non rifiuta a monte la marca da bollo telematica — la gestisce {@code
+	 * CtPaymentPaV2Builder} per singolo transfer.
+	 */
+	@PayloadRoot(namespace = NAMESPACE, localPart = "paGetPaymentV2Request")
+	@ResponsePayload
+	public JAXBElement<PaGetPaymentV2Response> paGetPaymentV2(@RequestPayload PaGetPaymentV2Request request) {
+		CtQrCode qrCode = request.getQrCode();
+		String numeroAvviso = qrCode.getNoticeNumber();
+		String codDominio = qrCode.getFiscalCode();
+		PaGetPaymentV2Response response;
+		try {
+			response = paGetPaymentV2ActivationService.eseguiGetPaymentV2(request, numeroAvviso, codDominio);
+		} catch (NdpException e) {
+			response = buildFaultGetPaymentV2(e);
+		} catch (RuntimeException e) {
+			response = buildFaultGetPaymentV2(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
+		}
+		return objectFactory.createPaGetPaymentV2Response(response);
+	}
+
+	private static PaGetPaymentV2Response buildFaultGetPaymentV2(NdpException e) {
+		PaGetPaymentV2Response response = new PaGetPaymentV2Response();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
 		fault.setId(e.getCodDominio());

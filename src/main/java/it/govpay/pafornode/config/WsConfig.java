@@ -19,6 +19,8 @@ import java.util.List;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 
@@ -66,7 +68,8 @@ public class WsConfig implements WsConfigurer {
 		// riconosce una classe come marshallabile anche senza @XmlRootElement solo se e'
 		// elencata esplicitamente qui, non per il solo fatto di stare nel context path.
 		marshaller.setClassesToBeBound(PaVerifyPaymentNoticeReq.class, PaVerifyPaymentNoticeRes.class,
-				PaGetPaymentReq.class, PaGetPaymentRes.class);
+				PaGetPaymentReq.class, PaGetPaymentRes.class, PaGetPaymentV2Request.class,
+				PaGetPaymentV2Response.class);
 		// Jaxb2Marshaller#supports(Class) di default rifiuta una classe priva di
 		// @XmlRootElement PRIMA ancora di controllare classesToBeBound (vedi
 		// Jaxb2Marshaller#supportsInternal, verificato sul sorgente 7.0.10): e' questo,

@@ -265,6 +265,27 @@ class PaForNodeEndpointTest {
 				""".formatted(idPA, idBrokerPA, idStation, fiscalCode, noticeNumber);
 	}
 
+	private String envelopeGetPaymentV2(String idPA, String idBrokerPA, String idStation, String fiscalCode,
+			String noticeNumber) {
+		return """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paGetPaymentV2Request>
+				      <idPA>%s</idPA>
+				      <idBrokerPA>%s</idBrokerPA>
+				      <idStation>%s</idStation>
+				      <qrCode>
+				        <fiscalCode>%s</fiscalCode>
+				        <noticeNumber>%s</noticeNumber>
+				      </qrCode>
+				    </pafn:paGetPaymentV2Request>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(idPA, idBrokerPA, idStation, fiscalCode, noticeNumber);
+	}
+
 	@Test
 	void wsdlEspostoSullaPathAttesa() {
 		HttpHeaders headers = new HttpHeaders();
@@ -392,6 +413,33 @@ class PaForNodeEndpointTest {
 				"<faultCode>PAA_PAGAMENTO_DUPLICATO</faultCode>");
 		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?",
 				Integer.class, identificativi.iuv())).isZero();
+	}
+
+	@Test
+	void paGetPaymentV2AttivaLaRptERestituisceIDatiDelPagamento() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-getpaymentv2-1", 16.00);
+
+		ResponseEntity<String> risposta = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>",
+				"<creditorReferenceId>" + identificativi.iuv() + "</creditorReferenceId>",
+				"<companyName>Comune di Test</companyName>");
+		assertThat(jdbcTemplate.queryForObject("select versione from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("SANP_321_V2");
+	}
+
+	@Test
+	void paGetPaymentV2RestituisceFaultPerPendenzaSconosciuta() {
+		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999997L);
+
+		ResponseEntity<String> risposta = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativiNonUsati.numeroAvviso()));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>",
+				"<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
 	}
 
 }

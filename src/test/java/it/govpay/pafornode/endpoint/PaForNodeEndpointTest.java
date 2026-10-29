@@ -6,6 +6,15 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.mockito.Mockito;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +35,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.client.RestTemplate;
 
+import it.govpay.pendenze.entity.Pendenza;
+import it.govpay.pendenze.repository.PendenzaRepository;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.entity.StazioneEntity;
@@ -101,6 +112,18 @@ class PaForNodeEndpointTest {
 
 	@Autowired
 	private PosizioneDebitoriaService posizioneDebitoriaService;
+
+	@PersistenceContext
+	private EntityManager entityManager;
+
+	@MockitoSpyBean
+	private PendenzaRepository pendenzaRepository;
+
+	@Autowired
+	private JdbcTemplate jdbcTemplate;
+
+	@Autowired
+	private PlatformTransactionManager transactionManager;
 
 	private Long idDominio;
 
@@ -338,4 +361,37 @@ class PaForNodeEndpointTest {
 		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(seconda.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_SYSTEM_ERROR</faultCode>");
 	}
+
+	@Test
+	void paGetPaymentRileggeLoStatoCambiatoPrimaDelLock() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-getpayment-race", 16.00);
+		// Simula un aggiornamento confermato da un'altra transazione dopo la prima
+		// lettura: l'entita' gia' presente nel persistence context rimane NON_ESEGUITO.
+		Mockito.doAnswer(invocation -> {
+			var risultato = entityManager.createQuery(
+					"select p from Pendenza p where p.idDominio = :dominio and p.iuv = :iuv",
+					Pendenza.class)
+					.setParameter("dominio", idDominio).setParameter("iuv", identificativi.iuv())
+					.getResultStream().findFirst();
+			TransactionTemplate altraTransazione = new TransactionTemplate(transactionManager);
+			altraTransazione.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+			altraTransazione.executeWithoutResult(status -> {
+				int aggiornate = jdbcTemplate.update(
+						"update versamenti set stato_versamento = 'ESEGUITO' where iuv_versamento = ?",
+						identificativi.iuv());
+				assertThat(aggiornate).isEqualTo(1);
+			});
+			return risultato;
+		}).when(pendenzaRepository).findByIdDominioAndIuv(idDominio, identificativi.iuv());
+
+		ResponseEntity<String> risposta = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO,
+				COD_STAZIONE, COD_DOMINIO, identificativi.numeroAvviso()));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>",
+				"<faultCode>PAA_PAGAMENTO_DUPLICATO</faultCode>");
+		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?",
+				Integer.class, identificativi.iuv())).isZero();
+	}
+
 }

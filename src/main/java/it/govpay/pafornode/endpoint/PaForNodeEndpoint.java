@@ -48,12 +48,16 @@ import it.govpay.pendenze.service.CausaleVersamentoCodec;
 /**
  * Implementa {@code paVerifyPaymentNotice} e {@code paGetPayment} del contratto paForNode.
  * Analisi completa del legacy ({@code PagamentiTelematiciCCPImpl}) nel design doc
- * (§1/§3/§3ter). <b>Scope di questa prima versione</b>: gestisce solo pendenze già presenti
- * in {@code govpay-common-pendenze} (migrate o create dal percorso di scrittura v3-nativo/
- * wrapper v2) — l'acquisizione live dall'applicazione gestionale proprietaria quando la
- * pendenza non è ancora presente (§3/§3bis del design doc) non è ancora implementata, nè lo
- * è l'attualizzazione per validità scaduta che la richiederebbe (§3ter): una pendenza non
- * trovata risulta {@code PAA_PAGAMENTO_SCONOSCIUTO}.
+ * (§1/§3/§3ter/§3quinquies). <b>Scope di questa prima versione</b>: gestisce solo pendenze
+ * già presenti in {@code govpay-common-pendenze} (migrate o create dal percorso di scrittura
+ * v3-nativo/wrapper v2) — l'acquisizione live dall'applicazione gestionale proprietaria
+ * quando la pendenza non è ancora presente (§3/§3bis del design doc) non è ancora
+ * implementata: una pendenza non trovata risulta {@code PAA_PAGAMENTO_SCONOSCIUTO}.
+ * L'attualizzazione per validità scaduta (§3ter) e' implementata solo per {@code
+ * paGetPayment} (via {@code PaGetPaymentActivationService}/{@code
+ * AttualizzazionePendenzaService}), e solo nel ramo SEND — non per {@code
+ * paVerifyPaymentNotice}, che resta {@code @Transactional(readOnly = true)} (vedi Javadoc di
+ * {@code AttualizzazionePendenzaService}).
  */
 @Endpoint
 public class PaForNodeEndpoint {
@@ -191,7 +195,7 @@ public class PaForNodeEndpoint {
 
 		CtPaymentOptionDescriptionPA opzione = new CtPaymentOptionDescriptionPA();
 		opzione.setOptions(StAmountOption.EQ);
-		opzione.setAmount(BigDecimal.valueOf(pendenza.getImporto()));
+		opzione.setAmount(importoTotaleConSend(pendenza));
 		opzione.setDetailDescription(descrizione);
 		opzione.setDueDate(toXmlDate(pendenza.getDataValidita()));
 		// TODO allCCP: richiede di verificare che tutte le voci abbiano un IBAN di accredito
@@ -202,6 +206,12 @@ public class PaForNodeEndpoint {
 		paymentList.setPaymentOptionDescription(opzione);
 		response.setPaymentList(paymentList);
 		return response;
+	}
+
+	private static BigDecimal importoTotaleConSend(Pendenza pendenza) {
+		BigDecimal importo = BigDecimal.valueOf(pendenza.getImporto());
+		return pendenza.getSendImportoTotale() != null
+				? importo.add(BigDecimal.valueOf(pendenza.getSendImportoTotale())) : importo;
 	}
 
 	private static XMLGregorianCalendar toXmlDate(OffsetDateTime data) {

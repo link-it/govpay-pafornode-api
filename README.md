@@ -138,3 +138,22 @@ Il tag deve coincidere con la versione del `pom.xml`, che non deve essere una SN
 
 Il workflow `.github/workflows/refresh-owasp-db.yml` aggiorna ogni notte la cache del database NVD
 usata da OWASP Dependency-Check.
+
+## Client SEND (`it.govpay.pafornode.send`)
+
+`SendClient` espone la sola GET `/delivery/v2.3/price/{paTaxId}/{noticeCode}` del
+[contratto SEND NotificationPriceV23](https://github.com/pagopa/pn-delivery/blob/main/docs/openapi/api-external-b2b-pa-bundle.yaml).
+Il bean viene registrato dal component scan di pafornode-api e usa `ConnettoreService` di govpay-common
+per autenticazione, TLS, timeout, correlation ID, cattura GDE e observation con tag `connettore`.
+
+```java
+long importoInCentesimi = sendClient.recuperaImportoNotifica(
+    dominio.getCodConnettoreSend(), dominio.getCodDominio(), numeroAvviso);
+```
+
+- `codConnettoreSend` mappa la colonna nullable `domini.cod_connettore_send`, già presente nel DB legacy.
+- L'URL del connettore deve essere la base del servizio (eventuale prefisso del proxy incluso), senza il percorso dell'operazione; l'eventuale slash finale è gestito.
+- `noticeCode` è il numero avviso completo, **non** lo IUV.
+- Il risultato è `totalPrice`, in **centesimi**, comprensivo di `paFee` e IVA; non `partialPrice`. Zero è valido.
+- Errori HTTP e di trasporto sono propagati come eccezioni Spring; gli errori HTTP conservano status e body. Un importo mancante, negativo o non intero causa un errore, non un costo zero.
+- Il client non aggiorna la pendenza e non applica retry applicativi. La conversione in euro e la chiamata a `registraImportoSend` spettano al servizio chiamante.

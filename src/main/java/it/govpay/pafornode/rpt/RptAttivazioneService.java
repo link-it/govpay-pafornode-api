@@ -1,14 +1,19 @@
 package it.govpay.pafornode.rpt;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
+import javax.xml.transform.stream.StreamSource;
+
 import jakarta.xml.bind.JAXBContext;
+import jakarta.xml.bind.JAXBElement;
 import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Marshaller;
+import jakarta.xml.bind.Unmarshaller;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -92,6 +97,28 @@ public class RptAttivazioneService {
 		rpt.setModelloPagamento(MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
 		rpt.setXmlRpt(serializza(ctPayment));
 		return rptRepository.save(rpt);
+	}
+
+	/**
+	 * Rilegge il {@code CtPaymentPA} dall'XML appena persistito su {@link Rpt#getXmlRpt()},
+	 * invece di riusare l'oggetto in memoria passato ad {@link #attiva} — stessa garanzia di
+	 * coerenza-con-quanto-scritto del legacy ({@code JaxbUtils.toPaGetPaymentResRPT}).
+	 */
+	public CtPaymentPA deserializzaDati(Rpt rpt) {
+		try {
+			Unmarshaller unmarshaller = jaxbContext.createUnmarshaller();
+			// Le classi generate da paForNode.xsd non hanno @XmlRootElement (il root e'
+			// dichiarato nello schema solo come <element>, non <complexType> con binding
+			// diretto, stesso motivo di Jaxb2Marshaller#setCheckForXmlRootElement in
+			// WsConfig): la forma a 1 argomento di unmarshal() non riconoscerebbe l'elemento
+			// come un root valido ("elementi previsti sono (none)"). Specificare la classe
+			// attesa fa risolvere l'elemento tramite l'@XmlElementDecl di ObjectFactory.
+			JAXBElement<PaGetPaymentRes> risultato = unmarshaller
+					.unmarshal(new StreamSource(new ByteArrayInputStream(rpt.getXmlRpt())), PaGetPaymentRes.class);
+			return risultato.getValue().getData();
+		} catch (JAXBException e) {
+			throw new IllegalStateException(e);
+		}
 	}
 
 	private void annullaPendenti(String codDominio, String iuv) {

@@ -28,6 +28,8 @@ import it.govpay.common.entity.TipoVersamentoDominioEntity;
 import it.govpay.common.entity.TipoVersamentoEntity;
 import it.govpay.common.entity.TributoEntity;
 import it.govpay.common.entity.UnitaOperativaEntity;
+import it.govpay.pafornode.security.UtenzaDominioEntity;
+import it.govpay.pafornode.security.UtenzaEntity;
 
 /**
  * Repository scan esteso a tutto {@code it.govpay.common.repository} (nessuna esclusione, a
@@ -56,7 +58,13 @@ import it.govpay.common.entity.UnitaOperativaEntity;
  * {@link it.govpay.pafornode.security.IntermediarioPrincipalRepository}, usato da
  * {@link it.govpay.pafornode.security.PaForNodePrincipalLoader} (SPI di
  * {@code govpay-common-auth}) per il lookup dell'intermediario per principal —
- * query non esposta da {@code IntermediarioRepository} di govpay-common.</p>
+ * query non esposta da {@code IntermediarioRepository} di govpay-common. Stesso package
+ * ospita anche {@code UtenzaEntity}/{@code UtenzaDominioEntity} (copia locale delle tabelle
+ * condivise {@code utenze}/{@code utenze_domini}, non un'anagrafica di govpay-common — vedi
+ * Javadoc di classe di {@code UtenzaEntity}), usate da {@code ApplicazioneDominioResolver}
+ * per risolvere quale applicazione gestisce un dominio/iuv quando non c'e' ancora una
+ * pendenza (§3quinquies del design doc) — per questo elencate anche in
+ * {@link #persistenceManagedTypes}.</p>
  */
 @SpringBootApplication
 @ComponentScan(basePackages = { "it.govpay.pafornode", "it.govpay.pendenze" })
@@ -104,6 +112,8 @@ public class Application extends SpringBootServletInitializer {
 		nomiClassi.add(TipoTributoEntity.class.getName());
 		nomiClassi.add(TributoEntity.class.getName());
 		nomiClassi.add(IbanAccreditoEntity.class.getName());
+		nomiClassi.add(UtenzaEntity.class.getName());
+		nomiClassi.add(UtenzaDominioEntity.class.getName());
 
 		return PersistenceManagedTypes.of(nomiClassi, List.of("it.govpay.pendenze.entity"));
 	}

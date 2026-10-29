@@ -14,9 +14,29 @@ risorse). Cinque operazioni (confermato dal README e dall'XSD):
 - `paGetPayment` / `paGetPaymentV2` — attivazione pagamento, dati di dettaglio e contabili;
 - `paSendRT` / `paSendRTV2` — ricezione ricevuta telematica.
 
-Allo stato iniziale (clonato il 2026-10-28) il repository è uno scheletro vuoto: solo
+Allo stato iniziale (clonato il 2026-10-28) il repository era uno scheletro vuoto: solo
 `Application.java` (bootstrap Spring Boot, DataSource/JPA esplicitamente esclusi finché non
 c'è una base dati configurata) e le risorse XSD/WSDL. Nessun endpoint implementato.
+
+**Stato di avanzamento (aggiornato al 2026-10-29)**: implementate e testate
+`paVerifyPaymentNotice` e `paGetPayment` (V1) — builder `CtPaymentPaBuilder`, persistenza
+RPT (`RptAttivazioneService`, con lock pessimistico sulla pendenza e sulle RPT pendenti e
+annullamento delle RPT precedenti, risposta ri-letta dall'XML persistito), notifica di
+accodamento verso il connettore di integrazione dell'applicazione
+(`NotificaAttivazioneService`), confine transazionale dedicato
+(`PaGetPaymentActivationService`, separato dall'endpoint non transazionale per non far
+sfuggire gli errori di commit alla costruzione della risposta KO), controlli condivisi tra
+le due operazioni (`PaForNodeChecks`, incluse le date di validità dell'opzione v3).
+Attualizzazione (§3quinquies): tutti e tre i rami — SEND, riacquisizione (pendenza TROVATA
+con validità scaduta) e acquisizione (pendenza DEL TUTTO ASSENTE, punto aperto #10) — sono
+ora implementati e cablati su `paGetPayment` (`SendClient`/`VerificaClient`/
+`PendenzaVerificataMapper`/`ApplicazioneDominioResolver`/`AttualizzazionePendenzaService`).
+**`paGetPayment` (V1) è quindi completo per tutti i casi analizzati**, salvo: il punto aperto
+#9 (nessuno dei tre rami ancora cablato su `paVerifyPaymentNotice`, che resta
+`@Transactional(readOnly = true)`), il punto aperto #11 (spedizione effettiva della notifica
+di attivazione — resta solo accodamento), e il punto aperto #1 (autenticazione X.509,
+infrastruttura/deployment, fuori scope applicativo) — nessuno dei tre blocca
+`paGetPaymentV2`, il cui piano va comunque confermato separatamente con il committente.
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -135,12 +155,16 @@ pubblicato (tag "Verifica"/"Verifica pendenze"), esposta dal gestionale, chiamat
   (`govpay-api-schemas.yaml`) — **lo stesso schema v2 che `govpay-pendenze-api` già consuma
   in scrittura** (`NuovaPendenzaMapper.crea`, wrapper v2 di `addPendenza`).
 
-**Implicazione architetturale rilevante**: convertire una `PendenzaVerificata` (v2) in un
-comando per `PosizioneDebitoriaService` (`govpay-common-pendenze`) è concettualmente la
-**stessa trasformazione** già implementata in `NuovaPendenzaMapper` per il wrapper v2 —
-`pendenza` qui è letteralmente una `NuovaPendenza`. Non si riscrive la mappatura da zero: si
-verifica se è possibile riusare/duplicare lo stesso pattern (stesso DTO generato dallo stesso
-schema OpenAPI, se `govpay-pafornode-api` genera le proprie classi da questi YAML).
+**Implicazione architetturale, verificata e risolta (§3quinquies, 2026-10-29)**: convertire
+una `PendenzaVerificata` (v2) in un comando per `PosizioneDebitoriaService`
+(`govpay-common-pendenze`) è concettualmente parente della trasformazione di
+`NuovaPendenzaMapper` per il wrapper v2, ma **non riusabile direttamente**: quella classe
+dipende dal proprio tipo generato (`it.govpay.pendenze.v2.api.model.NuovaPendenza`, diverso
+da `it.govpay.ec.client.beans.NuovaPendenza` anche se dallo stesso schema OpenAPI) e dalle
+entità di sicurezza proprie di quel modulo (autorizzazione per `utenza`, irrilevante qui:
+l'acquisizione è avviata da GovPay stesso tramite un connettore configurato, non da un
+chiamante HTTP da autorizzare). Scritta una mappatura propria, più piccola
+(`PendenzaVerificataMapper`, §3quinquies).
 
 **Mod4** (`POST /pendenze/{idDominio}/{idTipoPendenza}`, body custom) non è usato da
 `paVerifyPaymentNotice` (serve a `inoltroPendenza`, altro percorso applicativo, fuori scope).
@@ -190,27 +214,256 @@ cambia molto cosa serve implementare in Spring Boot (gestione diretta di un trus
 Java, vs. fidarsi di un header e validare solo che provenga dalla rete interna). Da chiarire
 con chi gestisce l'infrastruttura prima di disegnare l'autenticazione di questo modulo.
 
+## 3quinquies. Piano di implementazione dell'attualizzazione (deciso con il committente, 2026-10-28)
+
+Verificato nel legacy (`PagamentiTelematiciCCPImpl.java:540-610`) che `paGetPayment` ha la
+stessa identica struttura a due rami di `paVerifyPaymentNotice` (§1, punto 6): pendenza
+trovata → `aggiornaVersamento` (§3ter); pendenza non trovata → `acquisisciVersamento` (§3)
+seguita dallo stesso `aggiornaVersamento`. Va quindi implementata una volta, condivisa tra
+le due operazioni, non duplicata — da chiudere prima di `paGetPaymentV2` (che nel legacy
+condivide la stessa logica in `CtPaymentPAV2Builder`).
+
+**Decisioni**:
+
+- Contratto "Verifica" (§3bis): **solo v2** (risposta annidata su `NuovaPendenza`, 4 stati).
+  Non si implementa v1.
+- Operazione: **`getAvviso`** (`GET /avvisi/{idDominio}/{numeroAvviso}`) — coerente con
+  l'input di `paVerifyPaymentNotice`/`paGetPayment` (sempre `codDominio`+IUV/numeroAvviso,
+  mai `idA2A`+`idPendenza` direttamente). Non si implementa la configurabilità
+  `verifyPendenza`/`getAvviso` del legacy: per questa operazione `getAvviso` è l'unica
+  scelta sensata.
+- Client "Verifica": `it.govpay.pafornode.verifica.VerificaClient` (**fatto**), wrapper
+  sottile su `VerificaPendenzeApi.getAvviso(idDominio, numeroAvviso)` di `govpay-ec-client`
+  (`org.gov4j.govpay:govpay-ec-client`, generato da OpenAPI, specifica "API Notifica e
+  Verifica v2.1.1" — coincide con la decisione "solo v2" sopra), stesso principio di
+  `SendClient` (connettore risolto da `ApplicazioneEntity.codConnettoreIntegrazione` via
+  `ConnettoreService`, stessa risoluzione già cablata in `NotificaAttivazioneService`, stesso
+  campo che il legacy usa per entrambe le direzioni verifica/notifica).
+  **Bug trovato e corretto in `govpay-ec-client`** (non in questo repo): il DTO generato
+  `NuovaVocePendenza` inizialmente non portava `codEntrata`/`ibanAccredito`/`ibanAppoggio`/
+  `tipoBollo`/`hashDocumento`/`provinciaResidenza`/`codiceTassonomicoPagoPA` — campi che nello
+  YAML (`v2/govpay-api-schemas.yaml`) sono dentro un `oneOf` **senza discriminator**
+  (`TipoRiferimentoVocePendenza`: `RiferimentoEntrata`/`Entrata`/`Bollo`) che il generatore
+  legacy appiattisce per eredità ma quello di `govpay-ec-client` no — senza quei campi
+  nessuna voce acquisita avrebbe avuto un IBAN risolvibile. Risolto aggiungendo un
+  discriminator (`tipoRiferimento`) allo schema, più `GovPayEcApiClient` (nuovo in
+  `govpay-ec-client`, sostituisce il semplice `ApiClient` generato) che disabilita la
+  discriminazione Jackson in lettura (`@JsonTypeInfo(use = NONE)` via mixin) perché i payload
+  reali del gestionale sono flat, senza discriminator — stesso principio di
+  `Jaxb2Marshaller.setCheckForXmlRootElement(false)` già usato altrove in questa sessione per
+  un problema analogo (classi generate che non corrispondono esattamente a cosa arriva
+  davvero sulla rete).
+  `PendenzaVerificataMapper` (**fatto**, nuovo in `govpay-pafornode-api`, NON
+  `NuovaPendenzaMapper` di `govpay-pendenze-api` — vedi sotto perché) converte la
+  `NuovaPendenza` risultante in un `AggiornamentoPendenza` (`PosizioneDebitoriaService
+  .aggiornaPendenza`, non `crea`: la pendenza riacquisita esiste già, si aggiorna in loco,
+  non si crea una posizione nuova — § 3quinquies sotto per lo scope esatto).
+- Connettore SEND: campo dato **in `govpay-common`** — `codConnettoreSend` aggiunto a
+  `DominioEntity` (le spese SEND dipendono dal connettore SEND del *dominio*, non da quello
+  di verifica dell'applicazione, §3ter), accanto agli altri connettori di dominio già
+  presenti lì (`codConnettoreMyPivot`/`codConnettoreSecim`/`codConnettoreGovPay`/
+  `codConnettoreHyperSicApk`). **Fatto** (commit `514f074`, 2026-10-28/29).
+- Client SEND: **in `govpay-pafornode-api`** (non in `govpay-common`) — correzione rispetto
+  alla decisione precedente di questo documento: il dato di configurazione è condiviso
+  perché riguarda l'anagrafica del dominio, ma il client che chiama SEND è usato solo da
+  questo modulo, quindi non ha bisogno di vivere nella libreria condivisa (stesso principio
+  di `govpay-ec-client`, integrazione specifica separata dalla libreria generica).
+  Implementato `it.govpay.pafornode.send.SendClient` (**fatto**, scritto a mano — risolve
+  il punto aperto #7: un solo endpoint non giustificava la generazione OpenAPI): wrapper
+  sottile su `ConnettoreService` (`govpay-common`, già esistente — non nuovo), che fornisce
+  risoluzione del connettore, `RestTemplate` con autenticazione/TLS/correlation
+  ID/observability già configurati. `HttpClientConfig` (nuovo, in `pafornode-api`) importa
+  solo i bean necessari (`AsyncClientConfiguration`/`RestTemplateFactory`/
+  `Oauth2ClientCredentialsManager`/`ConnettoreService`) invece di
+  `GovPayClientAutoConfiguration` per intero, che registrerebbe anche repository/entity
+  pensati per il contesto batch. La persistenza del risultato riusa
+  `PosizioneDebitoriaService.registraImportoSend` (`govpay-common-pendenze`), già
+  esistente — resta da cablare la chiamata al client dentro `AttualizzazionePendenzaService`
+  (retention, conversione in euro, scrittura).
+- Orchestrazione: `AttualizzazionePendenzaService` (**fatto**, in `govpay-pafornode-api`,
+  package `it.govpay.pafornode.rpt`), stesso principio di `PaForNodeChecks` (pensato per
+  essere condiviso, non duplicato) — ma vedi sotto: **cablato solo su `paGetPayment`** (via
+  `PaGetPaymentActivationService`, chiamato dopo il lock pessimistico sulla pendenza e prima
+  di `PaForNodeChecks.verificaStatoPagabile`), non su `paVerifyPaymentNotice`. Due rami,
+  stesso ordine del legacy, entrambi **fatti**:
+  - pendenza trovata ma `dataValidita` scaduta, applicazione con connettore di verifica
+    configurato (`ApplicazioneEntity.codConnettoreIntegrazione`) → riacquisizione live
+    (`VerificaClient.getAvviso` + `PendenzaVerificataMapper` +
+    `PosizioneDebitoriaService.aggiornaPendenza`); eccezioni di business
+    (`PendenzaVerificata` con stato `ANNULLATA`/`SCADUTA`/`SCONOSCIUTA`) mappate sugli stessi
+    `FaultPa` di `PaForNodeChecks`.
+  - pendenza (anche appena riacquisita) con SEND abilitato e `codConnettoreSend` configurato
+    sul dominio → attualizzazione importo SEND (con retention, via `SendClient` +
+    `PosizioneDebitoriaService.registraImportoSend`) — eseguita DOPO l'eventuale
+    riacquisizione, stesso ordine del legacy ("dopo l'acquisizione, se sendAbilitato,
+    attualizza SEND").
+  - **Non implementato**: l'acquisizione di una pendenza DEL TUTTO ASSENTE (non solo con
+    validità scaduta) — richiede di risolvere quale applicazione gestisce un dominio/iuv
+    quando non c'è ancora una pendenza da cui leggere `idApplicazione` (equivalente di
+    `Applicazione.getApplicazioneDominio` del legacy), risoluzione non ancora analizzata.
+    Resta `PAA_PAGAMENTO_SCONOSCIUTO`, come oggi. Lo scope di `PendenzaVerificataMapper` è
+    comunque già pronto per questo caso (converte una `NuovaPendenza` in dati di pendenza);
+    manca solo la risoluzione dell'applicazione e la creazione (vs. aggiornamento) della
+    `PosizioneDebitoria`.
+  - Non ancora cablato su `paVerifyPaymentNotice`: quell'operazione resta
+    `@Transactional(readOnly = true)` nell'endpoint, e scrivere (SEND o riacquisizione) da
+    una transazione read-only è a rischio di fallire in produzione (connessione JDBC in
+    sola lettura su PostgreSQL) — richiede prima la stessa estrazione in un servizio
+    scrivente non read-only già applicata a `paGetPayment`. Non ancora fatto.
+- Correzione collaterale (**fatta**): `paVerifyPaymentNotice` non includeva le spese SEND
+  nell'`amount` della risposta (`VersamentoUtils.getImportoTotaleConSend` del legacy, §1
+  punto 8) — mancava indipendentemente dall'attualizzazione, perché è una pura lettura di
+  `pendenza.getSendImportoTotale()`, già eventualmente popolato da un aggiornamento
+  precedente. Corretto in `PaForNodeEndpoint.buildRispostaPositiva`.
+- Property Spring configurabili (**fatte**): `govpay.pafornode.attualizzazione.send-retention`
+  (default `PT1H`, equivalente di `it.govpay.client.send.retention`) e
+  `govpay.pafornode.attualizzazione.mandatoria` (default `false`, equivalente di
+  `isAggiornamentoValiditaMandatorio()`).
+
+**Punto aperto nuovo**: la mappatura `NuovaPendenza`(govpay-ec-client)→comandi
+`PosizioneDebitoriaService`, necessaria per i due casi non implementati sopra. Non è un
+riuso diretto di `NuovaPendenzaMapper` di `govpay-pendenze-api`: quella classe dipende dal
+proprio modello generato (`it.govpay.pendenze.v2.api.model.NuovaPendenza`, non lo stesso
+tipo Java del `NuovaPendenza` generato da `govpay-ec-client`, anche se dallo stesso schema
+OpenAPI) e dalle entità di sicurezza proprie di quel modulo (`UtenzaEntity`/
+`UtenzaDominioEntity`/...). Richiede una mappatura propria in `govpay-pafornode-api`, o
+l'estrazione della logica di mappatura condivisa in `govpay-common-pendenze` — da decidere
+prima di implementare i due casi mancanti.
+
+## 3sexies. Verifica di completezza di `paGetPayment` rispetto al legacy (2026-10-29)
+
+Letto per intero `PagamentiTelematiciCCPImpl.paGetPayment` (righe 708-1021, non solo i
+frammenti già analizzati) e confrontato punto per punto con l'implementazione attuale.
+
+**Confermato equivalente** (verificato contro il codice legacy, non per assunzione):
+- Marca da bollo telematica: `VersamentoUtils.isPendenzaMBT` (`jars/core/.../VersamentoUtils.java:1353-1363`)
+  itera le voci e si ferma alla prima con `hashDocumento`+`provinciaResidenza`+`tipoBollo`
+  tutti non-null — **identico** a `PaGetPaymentActivationService.contieneMarcaDaBollo`.
+- `IuvUtils.isNavSondaPagoPA`/configurazione Spring-WS: vedi punti aperti #4/#5 sopra, già
+  risolti (erano solo non ancora verificati nel documento, non mancanti nel codice).
+- Mappatura eccezioni → fault (`VersamentoScaduto`/`Annullato`/`Duplicato`/`Sconosciuto`/
+  `NonValido`/generica → `PAA_SYSTEM_ERROR`): stessa struttura in `PaForNodeChecks`/
+  `NdpException`/il catch-all `RuntimeException` dell'endpoint.
+- Annullamento RPT pendenti prima della nuova attivazione, stato finale `RPT_ACCETTATA_NODO`,
+  quota SEND nell'importo: tutti verificati nei finding della review precedente.
+
+**Deviazioni deliberate, non bug** (da tenere a mente, non da "correggere" per fedeltà):
+- **Notifica solo accodata, non spedita**: il legacy inserisce la notifica E tenta
+  l'invio sincrono via thread pool (`ThreadExecutorManager...execute(new
+  InviaNotificaThread(...))`, righe 966-969) se `inserisciNotifica` lo richiede. Questa
+  generazione si ferma all'accodamento (`NotificaAttivazioneService`, riga `DA_SPEDIRE`) —
+  già documentato nel Javadoc di quella classe, nessun processo di spedizione esiste ancora.
+- ~~Risposta costruita dall'oggetto in memoria, non ri-analizzata dall'XML persistito~~ —
+  **risolto** (2026-10-29): `RptAttivazioneService.deserializzaDati(Rpt)` rilegge
+  `rpt.getXmlRpt()` e lo deserializza, stessa garanzia del legacy
+  (`JaxbUtils.toPaGetPaymentResRPT`). `PaGetPaymentActivationService` ora usa quello invece
+  dell'oggetto `CtPaymentPA` in memoria. Nell'implementare questo e' emerso un bug (lo stesso
+  problema di `checkForXmlRootElement` del marshalling, §3quater: senza specificare la
+  classe attesa a `unmarshal()`, JAXB non riconosce l'elemento come root valido — risolto
+  con la forma a 2 argomenti `unmarshal(Source, Class)`), corretto prima del commit.
+- **Lock pessimistico sulla pendenza con re-lettura post-lock** (`entityManager.refresh(...,
+  PESSIMISTIC_WRITE)` in `PaGetPaymentActivationService`, con test di regressione dedicato):
+  non ha un equivalente diretto in questo punto del legacy (che usa `enableSelectForUpdate`
+  più avanti, sulla sola fase di insert RPT) — induriemento aggiunto in questa generazione,
+  non una lacuna.
+
+**Non implementato** (sapevamo già, confermato qui non essere sfuggito nient'altro):
+acquisizione di una pendenza DEL TUTTO ASSENTE (punto aperto #10); attualizzazione non
+cablata su `paVerifyPaymentNotice` (punto aperto #9); infrastruttura di autenticazione X.509
+(punto aperto #1, questione di deployment, non di codice applicativo).
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
    terminazione TLS nel servizio) o header da proxy upstream — da chiarire con chi gestisce
    l'infrastruttura prima di disegnare la sicurezza di questo modulo.
-2. **Operazione "Verifica" da usare in v1**: il legacy sceglie `verifyPendenza` o `getAvviso`
-   in base a una proprietà di configurazione (`operazioneVerifica`, `Costanti
-   .VERIFICA_PENDENZE_GET_AVVISO_OPERATION_ID`/`VERIFY_PENDENZA_OPERATION_ID`) con un default
-   che dipende dalla presenza di `iuv`. Per `paVerifyPaymentNotice` (che ha sempre
-   `codDominio`+`iuv`, mai `idA2A`+`idPendenza` direttamente) il path naturale è `getAvviso`
-   — da confermare se serve replicare anche la configurabilità o se per questa operazione
-   specifica `getAvviso` è l'unica scelta sensata.
-3. **Versione del contratto EC da implementare prima**: v1 (`govpay-api-ec-v1.yaml`, risposta
-   flat, 5 stati inclusa `DUPLICATA`) o v2 (`govpay-api-ec.yaml`, risposta annidata su
-   `NuovaPendenza`, 4 stati)? Il client legacy supporta entrambe per applicazione
-   configurata; non è chiaro se le applicazioni reali oggi usano prevalentemente v1 o v2.
-4. **`IuvUtils.isNavSondaPagoPA`**: da portare in `govpay-common` (o duplicare qui) — non
-   presente nel nuovo `it.govpay.common.utils.IuvUtils` (verificato).
-5. **Configurazione Spring-WS**: nessun bean `MessageDispatcherServlet`/`DefaultWsdl11Definition`
-   ancora presente — da scrivere (il plugin `jaxb2-maven-plugin` per le classi XJC da
-   `paForNode.xsd` è già configurato nel `pom.xml`, verificato generando le fonti).
-6. **Client HTTP generico riusabile**: verificare se `govpay-common` ha già un client HTTP
-   generico (usato altrove per i connettori ACA/FR/GPD/SEND) prima di scriverne uno nuovo per
-   il contratto EC.
+2. ~~Operazione "Verifica" da usare~~ — **risolto** (§3quinquies, 2026-10-28): `getAvviso`,
+   nessuna configurabilità da replicare.
+3. ~~Versione del contratto EC da implementare prima~~ — **risolto** (§3quinquies,
+   2026-10-28): solo v2, non si implementa v1.
+4. ~~`IuvUtils.isNavSondaPagoPA`~~ — **risolto** (verificato 2026-10-29): il legacy stesso è
+   solo `GovpayConfig.getInstance().getNavSondaPagoPA().contains(numeroAvviso)`, una lista
+   configurata — equivalente già presente in `PaForNodeEndpoint` (campo `navSondaPagoPA`,
+   property `govpay.pafornode.sonda-nav`), stessa semantica.
+5. ~~Configurazione Spring-WS~~ — **risolto**: `WsConfig` (`MessageDispatcherServlet`,
+   `SimpleWsdl11Definition` che pubblica `paForNode.wsdl` com'è, `Jaxb2Marshaller` con
+   `setCheckForXmlRootElement(false)`) già presente e funzionante (i test di integrazione
+   inviano envelope SOAP reali).
+6. ~~Client HTTP generico riusabile~~ — **risolto**: per "Verifica" si riusa
+   `govpay-ec-client`, già generato e buildato in locale; per SEND si riusa
+   `ConnettoreService` (`govpay-common`, già esistente), con un client sottile specifico in
+   `govpay-pafornode-api` — nessun nuovo client HTTP generico necessario in nessuno dei due
+   casi.
+7. ~~Client SEND: scritto a mano o generato via OpenAPI?~~ — **risolto** (§3quinquies,
+   2026-10-29): scritto a mano (`it.govpay.pafornode.send.SendClient`), un solo endpoint non
+   giustificava la generazione OpenAPI.
+8. ~~Mappatura `NuovaPendenza` (govpay-ec-client) → comandi `PosizioneDebitoriaService`~~ —
+   **risolto** (§3quinquies, 2026-10-29): mappatura propria (`PendenzaVerificataMapper`), non
+   condivisa/estratta da `NuovaPendenzaMapper`. Risolto anche un bug collaterale scoperto nel
+   frattempo in `govpay-ec-client` stesso (campi del `oneOf` `TipoRiferimentoVocePendenza`
+   persi dal generatore, vedi §3bis). Riacquisizione implementata per la pendenza TROVATA ma
+   con validità scaduta; resta aperta solo l'acquisizione della pendenza DEL TUTTO ASSENTE
+   (punto 10 sotto).
+9. **Attualizzazione (SEND e riacquisizione) non cablata su `paVerifyPaymentNotice`**
+   (§3quinquies, 2026-10-29): quell'operazione resta `@Transactional(readOnly = true)`;
+   scrivere da lì (SEND o riacquisizione, entrambe ora implementate per `paGetPayment`)
+   richiede prima la stessa estrazione in un servizio scrivente non read-only già applicata a
+   `paGetPayment`. Non ancora deciso se farlo prima o dopo `paGetPaymentV2`.
+10. ~~Acquisizione di una pendenza DEL TUTTO ASSENTE~~ — **risolto e implementato**
+    (2026-10-29). `Applicazione.getApplicazioneDominio` legacy
+    (`jars/core/.../business/Applicazione.java:36-65`) itera TUTTE le applicazioni registrate
+    e, per ciascuna, verifica prima l'autorizzazione al dominio
+    (`utenza.isAutorizzazioneDominiStar() || utenza.isIdDominioAutorizzato(idDominio)`,
+    tabelle `utenze`/`utenze_domini`) poi, se autorizzata, verifica che `applicazioni.reg_exp`
+    (regex sul formato dello IUV) faccia match — prima applicazione che soddisfa entrambe
+    vince, nessun fallback "tipo versamento di default".
+
+    **Decisione presa con il committente** sulla collocazione (`utenze`/`utenze_domini` non
+    hanno equivalente in `govpay-common`, stesso principio già noto per
+    `govpay-pendenze-api`/`govpay-console-api` — infrastruttura di sicurezza, non anagrafica
+    di dominio, ogni consumer mappa la propria vista):
+    - `UtenzaEntity`/`UtenzaDominioEntity` (**fatte**): copia locale in
+      `govpay-pafornode-api` (`it.govpay.pafornode.security`), stesso pattern degli altri
+      consumer — non condivise in `govpay-common`.
+    - Logica di decisione autorizzazione (**fatta**): `AutorizzazioneDominio.autorizzato`
+      (nuovo, in **`govpay-common-auth`**) — agnostico, prende in input i due booleani già
+      risolti dal chiamante (nessuna dipendenza nuova `govpay-common-auth`→`govpay-common`,
+      deliberatamente: la libreria resta generica, stesso principio di
+      `GovpayPrincipalLoader`).
+    - `ApplicazioneDominioResolver` (**fatto**, in `govpay-pafornode-api`): l'algoritmo di
+      RICERCA (itera `ApplicazioneRepository.findAll()`, risolve l'utenza, chiama
+      `AutorizzazioneDominio.autorizzato`, poi verifica `regExp`) — resta specifico di
+      `pafornode-api`, concettualmente diverso dalla verifica puntuale sopra (qui si cerca
+      CHI è autorizzato, non si verifica se un'applicazione già nota lo è). 6 test dedicati.
+    - Cablato in `PaGetPaymentActivationService.acquisisciPendenzaAssente`: risolve
+      l'applicazione, chiama `VerificaClient.getAvviso`, mappa con il nuovo
+      `PendenzaVerificataMapper.creaDatiPosizioneDebitoria` (creazione, non aggiornamento —
+      a differenza di `toAggiornamentoPendenza` usato per la riacquisizione) e persiste via
+      `PosizioneDebitoriaService.crea`.
+    - **Gap di test noto**: nessun test di integrazione end-to-end (SOAP reale) per il
+      percorso completo "pendenza assente → acquisita con successo" — la fixture
+      richiederebbe anche `TipoVersamentoDominioEntity`/`TipoTributoEntity`/`TributoEntity`,
+      non ancora scritta. Coperti solo `ApplicazioneDominioResolver` in isolamento e il
+      fault `PAA_PAGAMENTO_SCONOSCIUTO` quando nessuna applicazione fa match (test
+      preesistente, ancora verde).
+    - **Non replicato**: il fallback "tipo versamento di default" non esiste nemmeno nel
+      legacy (nessun fallback), quindi nessuna azione qui; l'ambiguità fra più applicazioni
+      che soddisfano entrambe le condizioni non è gestita (vince la prima, come nel legacy).
+11. **Spedizione effettiva della notifica di attivazione** (analizzato 2026-10-29): il
+    legacy (`InviaNotificaThread`, `jars/core/.../utils/thread/InviaNotificaThread.java`)
+    invia la notifica di `ATTIVAZIONE` con l'operazione **`notifyPagamento`** (POST
+    `/pagamenti/{codDominio}/{iuv}`, contratto EC **V1**, bean `it.govpay.ec.v1.beans.Notifica`)
+    — **non** la stessa operazione `notificaRicevuta` già generata in `govpay-ec-client`
+    (quella è per `TipoNotifica.RICEVUTA`, connettore V2, e per V2 l'ATTIVAZIONE non viene
+    proprio spedita: `inserisciNotifica` la scarta se il connettore non è `GP_REST_01`).
+    Errore di invio → stato resta `DA_SPEDIRE` con backoff quadratico e retry differito via
+    un batch dedicato (`Operazioni.spedizioneNotifiche`), non un retry immediato nel thread.
+    **Blocco reale**: `govpay-ec-client` oggi genera solo il contratto v2 (`notificaRicevuta`/
+    `notificaRendicontazione`/`getAvviso`/`verifyPendenza`) — l'operazione `notifyPagamento`
+    (V1, quella che serve per ATTIVAZIONE) non è generata. Implementarla richiederebbe
+    aggiungere quel contratto V1 a `govpay-ec-client` (o scrivere un client ad-hoc in
+    `pafornode-api`) per un'operazione che il legacy stesso tratta come propria di un
+    client "V1" più vecchio rispetto a quello usato per RICEVUTA. **Non ancora deciso con
+    il committente**: replicare fedelmente il contratto V1 legacy, o la nuova generazione ha
+    un piano diverso per notificare l'attivazione alle applicazioni (es. solo V2/RICEVUTA,
+    lasciando l'ATTIVAZIONE come solo accodamento senza spedizione)?

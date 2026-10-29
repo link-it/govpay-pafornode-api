@@ -34,7 +34,10 @@
 		<govpay-common-pendenze.version>1.0.0-SNAPSHOT</govpay-common-pendenze.version>
 
 		<!-- govpay-common-auth (not in BOM) -->
-		<govpay-common-auth.version>1.0.0</govpay-common-auth.version>
+		<govpay-common-auth.version>1.0.1</govpay-common-auth.version>
+
+		<!-- govpay-ec-client (not in BOM) -->
+		<govpay-ec-client.version>2.0.3-SNAPSHOT</govpay-ec-client.version>
 
 		<owasp.falsePositives.dir>src/main/resources/owasp/falsePositives</owasp.falsePositives.dir>
 		<!-- owasp config -->
@@ -269,6 +272,17 @@
 			<groupId>org.gov4j.govpay</groupId>
 			<artifactId>govpay-common-pendenze</artifactId>
 			<version>${govpay-common-pendenze.version}</version>
+		</dependency>
+
+		<!--
+			Client REST del protocollo "Verifica" (govpay-api-ec v2, §3bis/3quinquies del
+			design doc): VerificaPendenzeApi.getAvviso, usato per l'acquisizione live della
+			pendenza presso il gestionale del creditore.
+		-->
+		<dependency>
+			<groupId>org.gov4j.govpay</groupId>
+			<artifactId>govpay-ec-client</artifactId>
+			<version>${govpay-ec-client.version}</version>
 		</dependency>
 
 		<!--

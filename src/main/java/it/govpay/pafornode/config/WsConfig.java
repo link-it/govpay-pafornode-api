@@ -50,7 +50,8 @@ public class WsConfig implements WsConfigurer {
 	@Bean
 	public ServletRegistrationBean<MessageDispatcherServlet> messageDispatcherServlet(
 			ApplicationContext applicationContext) {
-		MessageDispatcherServlet servlet = new MessageDispatcherServlet();
+		// Variante che risponde 415/400, non 500, alle richieste non SOAP
+		MessageDispatcherServlet servlet = new PaForNodeMessageDispatcherServlet();
 		servlet.setApplicationContext(applicationContext);
 		servlet.setTransformWsdlLocations(true);
 		return new ServletRegistrationBean<>(servlet, "/ws/*");

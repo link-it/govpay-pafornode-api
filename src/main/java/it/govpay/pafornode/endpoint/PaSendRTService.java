@@ -1,12 +1,14 @@
 package it.govpay.pafornode.endpoint;
 
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 import javax.xml.datatype.XMLGregorianCalendar;
 
@@ -69,28 +71,41 @@ import it.govpay.pafornode.ricevuta.DatiRicevutaPagamento.DatiTrasferimentoRicev
  * <p><b>Ricostruzione "standin"</b> (punto aperto #14 del design doc, {@code
  * CtReceiptUtils.ricostruisciRPT}/{@code CtReceiptV2Utils.ricostruisciRPT} nel monolite):
  * se non esiste nessuna RPT in attesa di ricevuta ({@code RPT_ACCETTATA_NODO}) E non
- * esiste nessun'altra RPT del modello {@code ATTIVATO_PRESSO_PSP} (di qualunque stato,
- * stesso filtro per modello del legacy) per questa pendenza, significa che il pagamento
- * e' stato attivato direttamente al PSP tramite il Nodo, senza mai passare da {@code
+ * esiste nessun'altra RPT per questa pendenza, significa che il pagamento e' stato
+ * attivato direttamente al PSP tramite il Nodo, senza mai passare da {@code
  * paGetPayment}/{@code paGetPaymentV2} — {@link #trovaRptInAttesa} ricostruisce in quel
  * caso una RPT minimale ({@link RptAttivazioneService#ricostruisci}, {@code xmlRpt}
- * sempre {@code null}). Una RPT di un altro modello (altri canali di pagamento) non
- * blocca lo standin. Se invece esiste gia' una RPT di questo modello in un altro stato,
- * resta {@code PAA_RPT_SCONOSCIUTA} come nel legacy: non si ricostruisce una seconda
- * volta.</p>
+ * sempre {@code null}). Il filtro per modello su questa ricerca e' ASIMMETRICO fra le due
+ * operazioni, fedele al legacy: {@code paSendRT} (V1) filtra per {@code
+ * ATTIVATO_PRESSO_PSP} (una RPT di un altro modello non blocca lo standin), {@code
+ * paSendRTV2} non filtra affatto (qualunque RPT, di qualunque modello, blocca lo standin)
+ * — vedi Javadoc di {@link #trovaRptInAttesa}. Se esiste gia' una RPT che soddisfa il
+ * criterio, resta {@code PAA_RPT_SCONOSCIUTA} come nel legacy: non si ricostruisce una
+ * seconda volta.</p>
  *
  * <p>La deserializzazione/validazione semantica RT-contro-RPT ({@link
  * #validaSemantica}/{@code V2}) viene saltata quando la RPT non ha {@code xmlRpt} (il caso
  * standin: nessuna richiesta originale con cui confrontarsi) — stessa condizione del
  * legacy.</p>
  *
- * <p><b>Punti aperti, non implementati qui</b> (vedi Javadoc di classe di
- * {@link AcquisizioneRicevutaService}): validazione semantica semplificata (solo i due
- * controlli "fatali" del legacy — {@code creditorReferenceId} e coerenza del numero di
- * trasferimenti — non l'intero confronto campo per campo, incluso il caso ibrido
- * {@code RPTV2_RTV1}); nessuna persistenza separata dello stato {@code RT_RIFIUTATA_PA}
- * quando la validazione semantica fallisce (il legacy la commit a parte prima di
- * rilanciare il fault, qui l'intera transazione viene scartata col fault).</p>
+ * <p><b>Casi ibridi</b> (punti #17/#18 del design doc, {@code CtReceiptUtils}/{@code
+ * CtReceiptV2Utils} del monolite): se la versione della RPT trovata non e' quella attesa
+ * dall'operazione chiamata, la ricevuta e' arrivata tramite l'operazione "sbagliata" —
+ * confermato scenario reale da pagoPA, non solo teorico. {@link #eseguiSendRT} marca in
+ * quel caso la RPT con {@code VERSIONE_RPTV2_RTV1} e valida con {@link
+ * #validaSemanticaIbridaV2RptV1Rt}; {@link #eseguiSendRTV2}, simmetricamente, con {@code
+ * VERSIONE_RPTV1_RTV2} e {@link #validaSemanticaIbridaV1RptV2Rt}. Il legacy, sul lato V2,
+ * ha un TERZO ramo per una RPT pre-paForNode (SANP_230) — non riportato: questo modulo non
+ * gestira' mai transazioni in quel formato (punto #19, confermato dal committente non
+ * raggiungibile per costruzione), quindi la dispatch qui resta a due vie su entrambi i
+ * lati. Nessuno dei due casi ibridi include il controllo sul debitore, fedele al legacy
+ * (presente solo nel percorso V2-V2 puro, {@link #validaSemanticaV2}).</p>
+ *
+ * <p>Il multi-debitore di v3 non ha impatto su questa validazione: {@code
+ * CtPaymentPaBuilder}/{@code CtPaymentPaV2Builder} risolvono gia' un solo "debitore
+ * principale" al momento dell'ATTIVAZIONE della RPT, congelato nell'XML che questo
+ * servizio rilegge — nessuna rilettura dinamica di {@code PosizioneDebitoria
+ * #getSoggettiDebitori()} qui.</p>
  */
 @Service
 public class PaSendRTService {
@@ -127,7 +142,17 @@ public class PaSendRTService {
 		}
 	}
 
-	@Transactional
+	/**
+	 * {@code noRollbackFor = NdpException.class}: necessario perche' {@link
+	 * RptAttivazioneService#rifiutaPerValidazioneSemantica} (chiamato PRIMA del fault
+	 * {@code PAA_SEMANTICA}) sopravviva — partecipa a QUESTA transazione (vedi Javadoc di
+	 * quel metodo), che altrimenti farebbe rollback di quella scrittura insieme al resto
+	 * non appena l'eccezione esce dal metodo. Sicuro perche' nessun'altra {@code
+	 * NdpException} lanciata qui ha una scrittura pendente da preservare (sola lettura/
+	 * lock fino a quel punto) — una futura modifica che introduca un'altra scrittura prima
+	 * di un fault deve riverificare questa invariante.
+	 */
+	@Transactional(noRollbackFor = NdpException.class)
 	public PaSendRTRes eseguiSendRT(PaSendRTReq request) {
 		CtReceipt receipt = request.getReceipt();
 		String codDominio = receipt.getFiscalCode();
@@ -137,17 +162,31 @@ public class PaSendRTService {
 		Pendenza pendenza = trovaEBloccaPendenza(dominio.getId(), iuv, codDominio);
 		OffsetDateTime dataPagamento = convertiData(receipt.getPaymentDateTime());
 		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
-				RptAttivazioneService.VERSIONE_SANP_240, codDominio);
+				RptAttivazioneService.VERSIONE_SANP_240, true, codDominio);
+		byte[] xmlRt = serializza(request);
 
 		if (rpt.getXmlRpt() != null) {
-			CtPaymentPA richiesta = rptAttivazioneService.deserializzaDati(rpt);
-			validaSemantica(richiesta, receipt, codDominio);
+			try {
+				if (Objects.equals(rpt.getVersione(), RptAttivazioneService.VERSIONE_SANP_240)) {
+					CtPaymentPA richiesta = rptAttivazioneService.deserializzaDati(rpt);
+					validaSemantica(richiesta, receipt, codDominio);
+				} else {
+					// Caso ibrido (punto #17 del design doc): RPT attivata con paGetPaymentV2,
+					// ricevuta arrivata tramite paSendRT (V1).
+					rpt.setVersione(RptAttivazioneService.VERSIONE_RPTV2_RTV1);
+					CtPaymentPAV2 richiesta = rptAttivazioneService.deserializzaDatiV2(rpt);
+					validaSemanticaIbridaV2RptV1Rt(richiesta, receipt, codDominio);
+				}
+			} catch (NdpException e) {
+				rptAttivazioneService.rifiutaPerValidazioneSemantica(rpt, xmlRt, e.getDescrizione());
+				throw e;
+			}
 		}
 
 		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
 				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
 				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
-				serializza(request), trasferimentiV1(receipt));
+				xmlRt, trasferimentiV1(receipt));
 		acquisizioneRicevutaService.acquisisci(pendenza, rpt, dati);
 
 		PaSendRTRes response = new PaSendRTRes();
@@ -155,7 +194,8 @@ public class PaSendRTService {
 		return response;
 	}
 
-	@Transactional
+	/** Come {@link #eseguiSendRT}, stesso motivo per {@code noRollbackFor}. */
+	@Transactional(noRollbackFor = NdpException.class)
 	public PaSendRTV2Response eseguiSendRTV2(PaSendRTV2Request request) {
 		CtReceiptV2 receipt = request.getReceipt();
 		String codDominio = receipt.getFiscalCode();
@@ -165,17 +205,32 @@ public class PaSendRTService {
 		Pendenza pendenza = trovaEBloccaPendenza(dominio.getId(), iuv, codDominio);
 		OffsetDateTime dataPagamento = convertiData(receipt.getPaymentDateTime());
 		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
-				RptAttivazioneService.VERSIONE_SANP_321_V2, codDominio);
+				RptAttivazioneService.VERSIONE_SANP_321_V2, false, codDominio);
+		byte[] xmlRt = serializzaV2(request);
 
 		if (rpt.getXmlRpt() != null) {
-			CtPaymentPAV2 richiesta = rptAttivazioneService.deserializzaDatiV2(rpt);
-			validaSemanticaV2(richiesta, receipt, codDominio);
+			try {
+				if (Objects.equals(rpt.getVersione(), RptAttivazioneService.VERSIONE_SANP_321_V2)) {
+					CtPaymentPAV2 richiesta = rptAttivazioneService.deserializzaDatiV2(rpt);
+					validaSemanticaV2(richiesta, receipt, codDominio);
+				} else {
+					// Caso ibrido (punto #18 del design doc): RPT attivata con paGetPayment (V1),
+					// ricevuta arrivata tramite paSendRTV2. Nessun ramo SANP_230 (il legacy ne
+					// avrebbe uno terzo, qui non raggiungibile per costruzione — punto #19).
+					rpt.setVersione(RptAttivazioneService.VERSIONE_RPTV1_RTV2);
+					CtPaymentPA richiesta = rptAttivazioneService.deserializzaDati(rpt);
+					validaSemanticaIbridaV1RptV2Rt(richiesta, receipt, codDominio);
+				}
+			} catch (NdpException e) {
+				rptAttivazioneService.rifiutaPerValidazioneSemantica(rpt, xmlRt, e.getDescrizione());
+				throw e;
+			}
 		}
 
 		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
 				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
 				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
-				serializzaV2(request), trasferimentiV2(receipt));
+				xmlRt, trasferimentiV2(receipt));
 		acquisizioneRicevutaService.acquisisci(pendenza, rpt, dati);
 
 		PaSendRTV2Response response = new PaSendRTV2Response();
@@ -207,48 +262,62 @@ public class PaSendRTService {
 	 * Idempotenza (gia' acquisita con questo {@code receiptId}) poi ricerca della RPT in
 	 * attesa di ricevuta — in quest'ordine, cosi' un retry con lo stesso {@code receiptId}
 	 * produce {@code PAA_RECEIPT_DUPLICATA} e non {@code PAA_RPT_SCONOSCIUTA} (la riga e'
-	 * ormai in stato {@code RT_ACCETTATA_PA}, non piu' {@code RPT_ACCETTATA_NODO}). La
-	 * ricerca della RPT in attesa e' filtrata anche per modello ({@code
-	 * ATTIVATO_PRESSO_PSP}, stesso filtro dello standin sotto): senza questo filtro una
-	 * RPT di un ALTRO modello ancora in questo stato verrebbe selezionata ed usata al
-	 * posto della ricostruzione "standin". Se nessuna RPT in attesa di questo modello
-	 * esiste, ricade sul caso "standin" ({@link #standin}) prima di arrendersi col fault
-	 * — vedi Javadoc di classe.
+	 * ormai in stato {@code RT_ACCETTATA_PA}, non piu' {@code RPT_ACCETTATA_NODO}).
+	 *
+	 * <p>{@code filtraPerModelloPsp} replica un'asimmetria presente anche nel legacy fra
+	 * le due operazioni: {@code paSendRT} (V1, {@code CtReceiptUtils.acquisisciRT}) filtra
+	 * la ricerca per modello {@code ATTIVATO_PRESSO_PSP}
+	 * ({@code rptBD.getRpt(codDominio, iuv, ModelloPagamento.ATTIVATO_PRESSO_PSP, null)}),
+	 * mentre {@code paSendRTV2} ({@code CtReceiptV2Utils.acquisisciRT}) NON filtra affatto
+	 * ({@code rptBD.getRpt(codDominio, iuv, null, null)}) — su V2 una RPT di QUALUNQUE
+	 * modello viene selezionata se e' nello stato atteso. Senza il filtro (quando
+	 * richiesto, cioe' per V1), una RPT di un ALTRO modello ancora in questo stato
+	 * verrebbe selezionata ed usata al posto della ricostruzione "standin".</p>
+	 *
+	 * <p>Se nessuna RPT in attesa esiste, ricade sul caso "standin" ({@link #standin})
+	 * prima di arrendersi col fault — vedi Javadoc di classe.</p>
 	 */
 	private Rpt trovaRptInAttesa(DominioEntity dominio, Pendenza pendenza, String receiptId,
-			OffsetDateTime dataPagamento, String versione, String codDominioFault) {
+			OffsetDateTime dataPagamento, String versione, boolean filtraPerModelloPsp, String codDominioFault) {
 		if (rptRepository.findByCodDominioAndIuvAndIur(dominio.getCodDominio(), pendenza.getIuv(), receiptId)
 				.isPresent()) {
 			throw new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, codDominioFault);
 		}
-		return rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(pendenza.getId(),
-				StatoRpt.RPT_ACCETTATA_NODO.name(), RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)
-				.orElseGet(() -> standin(dominio, pendenza, receiptId, dataPagamento, versione, codDominioFault));
+		Optional<Rpt> inAttesa = filtraPerModelloPsp
+				? rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(pendenza.getId(),
+						StatoRpt.RPT_ACCETTATA_NODO.name(), RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)
+				: rptRepository.findByIdVersamentoAndStato(pendenza.getId(), StatoRpt.RPT_ACCETTATA_NODO.name());
+		return inAttesa.orElseGet(
+				() -> standin(dominio, pendenza, receiptId, dataPagamento, versione, filtraPerModelloPsp, codDominioFault));
 	}
 
 	/**
-	 * Ricostruzione "standin" (vedi Javadoc di classe): si applica solo se non esiste
-	 * NESSUNA RPT del modello {@code ATTIVATO_PRESSO_PSP}, di qualunque stato, per questa
-	 * pendenza — stesso filtro del legacy ({@code rptBD.getRpt(codDominio, iuv,
-	 * ModelloPagamento.ATTIVATO_PRESSO_PSP, null)}). Una RPT di un altro modello (altri
-	 * canali di pagamento) non blocca lo standin; se invece esiste gia' una RPT di questo
-	 * modello, resta {@code PAA_RPT_SCONOSCIUTA} come nel legacy, non si ricostruisce una
-	 * seconda volta.
+	 * Ricostruzione "standin" (vedi Javadoc di classe e di {@link #trovaRptInAttesa} per
+	 * {@code filtraPerModelloPsp}): si applica solo se non esiste NESSUN'ALTRA RPT per
+	 * questa pendenza (del modello {@code ATTIVATO_PRESSO_PSP} per V1, di qualunque
+	 * modello per V2 — stessa asimmetria del legacy), di qualunque stato. Se invece esiste
+	 * gia' una RPT che soddisfa questo criterio, resta {@code PAA_RPT_SCONOSCIUTA} come nel
+	 * legacy, non si ricostruisce una seconda volta.
 	 */
 	private Rpt standin(DominioEntity dominio, Pendenza pendenza, String receiptId, OffsetDateTime dataPagamento,
-			String versione, String codDominioFault) {
-		if (rptRepository.existsByIdVersamentoAndModelloPagamento(pendenza.getId(),
-				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)) {
+			String versione, boolean filtraPerModelloPsp, String codDominioFault) {
+		boolean esisteGiaUnaRpt = filtraPerModelloPsp
+				? rptRepository.existsByIdVersamentoAndModelloPagamento(pendenza.getId(),
+						RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)
+				: rptRepository.existsByIdVersamento(pendenza.getId());
+		if (esisteGiaUnaRpt) {
 			throw new NdpException(FaultPa.PAA_RPT_SCONOSCIUTA, codDominioFault);
 		}
 		return rptAttivazioneService.ricostruisci(pendenza, dominio, versione, receiptId, dataPagamento);
 	}
 
 	/**
-	 * Solo i due controlli "fatali" del legacy ({@code CtReceiptUtils.validaSemantica},
-	 * righe 96/102-105): {@code creditorReferenceId} e coerenza del numero di
-	 * trasferimenti con l'esito. Gli altri controlli del legacy sono solo diagnostici
-	 * (producono un messaggio di log, non un fault) — non replicati, vedi Javadoc di classe.
+	 * Quattro dei controlli "fatali" del legacy ({@code CtReceiptUtils.validaSemantica}):
+	 * {@code creditorReferenceId}, coerenza del numero di trasferimenti con l'esito,
+	 * importo totale pagato contro la somma dei singoli importi ricevuti, importo totale
+	 * non nullo su un esito {@code KO}. Gli altri controlli del legacy sono solo
+	 * diagnostici (producono un messaggio di log, non un fault) — non replicati, vedi
+	 * Javadoc di classe.
 	 */
 	private void validaSemantica(CtPaymentPA richiesta, CtReceipt ricevuta, String codDominio) {
 		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
@@ -264,10 +333,100 @@ public class PaSendRTService {
 			throw new NdpException(FaultPa.PAA_SEMANTICA,
 					"Numero di pagamenti diverso dal numero di versamenti", codDominio);
 		}
+		BigDecimal importoTotaleCalcolato = trasferimenti.stream().map(CtTransferPA::getTransferAmount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add);
+		BigDecimal paymentAmount = ricevuta.getPaymentAmount();
+		if (importoTotaleCalcolato.compareTo(paymentAmount) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato non corrisponde alla somma dei SingoliImportiPagati", codDominio);
+		}
+		if (ricevuta.getOutcome() == StOutcome.KO && paymentAmount.compareTo(BigDecimal.ZERO) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato diverso da 0 per un pagamento con esito KO", codDominio);
+		}
 	}
 
-	/** Come {@link #validaSemantica}, per {@code paSendRTV2}. */
+	/**
+	 * Come {@link #validaSemantica}, per {@code paSendRTV2} — con un controllo fatale IN
+	 * PIU' presente solo in questa versione nel legacy
+	 * ({@code CtReceiptV2Utils.validaSemantica}, via {@code NdpValidationUtils
+	 * #validaSemantica(CtSubject,...)}): l'identificativo univoco del debitore.
+	 */
 	private void validaSemanticaV2(CtPaymentPAV2 richiesta, CtReceiptV2 ricevuta, String codDominio) {
+		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA, "CreditorReferenceId non corrisponde", codDominio);
+		}
+		String identificativoRichiesto = richiesta.getDebtor().getUniqueIdentifier().getEntityUniqueIdentifierValue();
+		String identificativoRicevuto = ricevuta.getDebtor().getUniqueIdentifier().getEntityUniqueIdentifierValue();
+		if (!Objects.equals(identificativoRichiesto, identificativoRicevuto)) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA, "UniqueIdentifierDebtor non corrisponde", codDominio);
+		}
+		int numeroRichiesto = richiesta.getTransferList().getTransfer().size();
+		List<CtTransferPAReceiptV2> trasferimenti = ricevuta.getTransferList() != null
+				? ricevuta.getTransferList().getTransfer() : List.of();
+		boolean numeroIncoerente = ricevuta.getOutcome() == StOutcome.OK
+				? trasferimenti.size() != numeroRichiesto
+				: !trasferimenti.isEmpty() && trasferimenti.size() != numeroRichiesto;
+		if (numeroIncoerente) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"Numero di pagamenti diverso dal numero di versamenti", codDominio);
+		}
+		BigDecimal importoTotaleCalcolato = trasferimenti.stream().map(CtTransferPAReceiptV2::getTransferAmount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add);
+		BigDecimal paymentAmount = ricevuta.getPaymentAmount();
+		if (importoTotaleCalcolato.compareTo(paymentAmount) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato non corrisponde alla somma dei SingoliImportiPagati", codDominio);
+		}
+		if (ricevuta.getOutcome() == StOutcome.KO && paymentAmount.compareTo(BigDecimal.ZERO) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato diverso da 0 per un pagamento con esito KO", codDominio);
+		}
+	}
+
+	/**
+	 * Caso ibrido RPTV2_RTV1 (punto #17 del design doc) — porting di {@code
+	 * CtReceiptUtils.validaSemantica(PaGetPaymentV2Response, PaSendRTReq)} del monolite:
+	 * stessi quattro controlli di {@link #validaSemantica(CtPaymentPA, CtReceipt, String)}
+	 * (la richiesta e' pero' nel formato V2), SENZA il controllo sul debitore — il legacy
+	 * non lo fa in nessuno dei due casi ibridi, solo nel percorso V2-V2 puro (vedi {@link
+	 * #validaSemanticaV2}).
+	 */
+	private void validaSemanticaIbridaV2RptV1Rt(CtPaymentPAV2 richiesta, CtReceipt ricevuta, String codDominio) {
+		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA, "CreditorReferenceId non corrisponde", codDominio);
+		}
+		int numeroRichiesto = richiesta.getTransferList().getTransfer().size();
+		List<CtTransferPA> trasferimenti = ricevuta.getTransferList() != null
+				? ricevuta.getTransferList().getTransfer() : List.of();
+		boolean numeroIncoerente = ricevuta.getOutcome() == StOutcome.OK
+				? trasferimenti.size() != numeroRichiesto
+				: !trasferimenti.isEmpty() && trasferimenti.size() != numeroRichiesto;
+		if (numeroIncoerente) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"Numero di pagamenti diverso dal numero di versamenti", codDominio);
+		}
+		BigDecimal importoTotaleCalcolato = trasferimenti.stream().map(CtTransferPA::getTransferAmount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add);
+		BigDecimal paymentAmount = ricevuta.getPaymentAmount();
+		if (importoTotaleCalcolato.compareTo(paymentAmount) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato non corrisponde alla somma dei SingoliImportiPagati", codDominio);
+		}
+		if (ricevuta.getOutcome() == StOutcome.KO && paymentAmount.compareTo(BigDecimal.ZERO) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato diverso da 0 per un pagamento con esito KO", codDominio);
+		}
+	}
+
+	/**
+	 * Caso ibrido simmetrico RPTV1_RTV2 (punto #18 del design doc) — porting di {@code
+	 * CtReceiptV2Utils.validaSemantica(PaGetPaymentRes, PaSendRTV2Request)} del monolite:
+	 * stessi quattro controlli di {@link #validaSemanticaV2(CtPaymentPAV2, CtReceiptV2,
+	 * String)} (la richiesta e' pero' nel formato V1), SENZA il controllo sul debitore —
+	 * stessa asimmetria di {@link #validaSemanticaIbridaV2RptV1Rt}.
+	 */
+	private void validaSemanticaIbridaV1RptV2Rt(CtPaymentPA richiesta, CtReceiptV2 ricevuta, String codDominio) {
 		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
 			throw new NdpException(FaultPa.PAA_SEMANTICA, "CreditorReferenceId non corrisponde", codDominio);
 		}
@@ -280,6 +439,17 @@ public class PaSendRTService {
 		if (numeroIncoerente) {
 			throw new NdpException(FaultPa.PAA_SEMANTICA,
 					"Numero di pagamenti diverso dal numero di versamenti", codDominio);
+		}
+		BigDecimal importoTotaleCalcolato = trasferimenti.stream().map(CtTransferPAReceiptV2::getTransferAmount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add);
+		BigDecimal paymentAmount = ricevuta.getPaymentAmount();
+		if (importoTotaleCalcolato.compareTo(paymentAmount) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato non corrisponde alla somma dei SingoliImportiPagati", codDominio);
+		}
+		if (ricevuta.getOutcome() == StOutcome.KO && paymentAmount.compareTo(BigDecimal.ZERO) != 0) {
+			throw new NdpException(FaultPa.PAA_SEMANTICA,
+					"ImportoTotalePagato diverso da 0 per un pagamento con esito KO", codDominio);
 		}
 	}
 

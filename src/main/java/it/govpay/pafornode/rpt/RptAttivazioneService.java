@@ -55,6 +55,20 @@ public class RptAttivazioneService {
 	public static final String VERSIONE_SANP_240 = "SANP_240";
 	/** Versione RPT per {@code paSendRTV2} (V2) e per la corrispondente ricostruzione "standin". */
 	public static final String VERSIONE_SANP_321_V2 = "SANP_321_V2";
+	/**
+	 * Marcatura di una RPT attivata con {@code paGetPaymentV2} (quindi {@link
+	 * #VERSIONE_SANP_321_V2}) la cui ricevuta e' arrivata tramite {@code paSendRT} (V1) —
+	 * porting di {@code VersioneRPT.RPTV2_RTV1} del monolite. Scritta da {@code
+	 * PaSendRTService#eseguiSendRT} al posto della versione originale quando rileva il
+	 * mismatch, persiste sulla RPT anche in caso di successivo rifiuto/retry.
+	 */
+	public static final String VERSIONE_RPTV2_RTV1 = "RPTV2_RTV1";
+	/**
+	 * Come {@link #VERSIONE_RPTV2_RTV1}, caso simmetrico: RPT attivata con {@code
+	 * paGetPayment} ({@link #VERSIONE_SANP_240}), ricevuta arrivata tramite {@code
+	 * paSendRTV2} — porting di {@code VersioneRPT.RPTV1_RTV2}.
+	 */
+	public static final String VERSIONE_RPTV1_RTV2 = "RPTV1_RTV2";
 
 	private final PendenzaRepository pendenzaRepository;
 	private final RptRepository rptRepository;
@@ -105,6 +119,35 @@ public class RptAttivazioneService {
 		Rpt rpt = nuovaRptAttivata(pendenza, dominio, stazione, ccp, VERSIONE_SANP_321_V2, codCarrello);
 		rpt.setXmlRpt(serializzaV2(ctPayment));
 		return rptRepository.save(rpt);
+	}
+
+	/**
+	 * Persiste il rifiuto della validazione semantica RT-contro-RPT ({@code
+	 * RT_RIFIUTATA_PA}, con il corpo grezzo della ricevuta rifiutata e il messaggio del
+	 * controllo fallito) — stesso comportamento del legacy ({@code
+	 * CtReceiptUtils.acquisisciRT}: la RPT rifiutata viene comunque aggiornata prima di
+	 * rilanciare {@code PAA_SEMANTICA}).
+	 *
+	 * <p><b>Nessuna transazione propria (volutamente)</b>: {@code rpt} e' gia' gestito
+	 * dalla transazione del chiamante, che la detiene con lock pessimistico — una
+	 * {@code REQUIRES_NEW} qui aprirebbe una seconda transazione/connessione che si
+	 * bloccherebbe in attesa dello stesso lock, mai rilasciato finche' il chiamante non
+	 * ritorna (deadlock). Partecipa quindi alla stessa transazione del chiamante, che DEVE
+	 * marcare {@code PAA_SEMANTICA} con {@code noRollbackFor} (vedi {@code
+	 * PaSendRTService#eseguiSendRT}/{@code V2}) perche' questa scrittura sopravviva al
+	 * fault che la segue.</p>
+	 *
+	 * @param rpt       la RPT da aggiornare, gia' gestita dalla transazione del chiamante
+	 * @param xmlRt     corpo grezzo della ricevuta rifiutata, da conservare per diagnosi
+	 * @param messaggio descrizione del controllo semantico fallito
+	 */
+	@Transactional
+	public void rifiutaPerValidazioneSemantica(Rpt rpt, byte[] xmlRt, String messaggio) {
+		rpt.setStato(StatoRpt.RT_RIFIUTATA_PA.name());
+		rpt.setDescrizioneStato(messaggio);
+		rpt.setXmlRt(xmlRt);
+		rpt.setDataAggiornamentoStato(OffsetDateTime.now(clock));
+		rptRepository.save(rpt);
 	}
 
 	/**

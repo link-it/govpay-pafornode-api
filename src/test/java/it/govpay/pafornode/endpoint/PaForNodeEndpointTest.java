@@ -515,6 +515,88 @@ class PaForNodeEndpointTest {
 				"receipt-" + identificativi.iuv())).isEqualTo(1);
 	}
 
+	/**
+	 * Verifica che il rifiuto della validazione semantica venga persistito ({@code
+	 * RT_RIFIUTATA_PA}, {@code xmlRt} conservato) PRIMA del fault, non scartato col
+	 * rollback della transazione — stesso comportamento del legacy ({@code
+	 * CtReceiptUtils.acquisisciRT}, commit separato prima di rilanciare {@code
+	 * PAA_SEMANTICA}). Il controllo fatale innescato qui e' il numero di trasferimenti
+	 * (2 nella ricevuta, contro 1 solo nella richiesta originale) — {@code
+	 * creditorReferenceId} non e' costruibile in un mismatch realistico via contratto
+	 * pubblico, dato che e' anche la chiave con cui si trova la pendenza stessa.
+	 */
+	@Test
+	void paSendRTPersisteIlRifiutoDellaValidazioneSemanticaPrimaDelFault() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-semantica-rifiuto", 16.00);
+
+		ResponseEntity<String> attivazione = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+
+		String receiptId = "receipt-" + identificativi.iuv();
+		String envelopeConDueTrasferimenti = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paSendRTReq>
+				      <idPA>%1$s</idPA>
+				      <idBrokerPA>%2$s</idBrokerPA>
+				      <idStation>%3$s</idStation>
+				      <receipt>
+				        <receiptId>%4$s</receiptId>
+				        <noticeNumber>300000000000000001</noticeNumber>
+				        <fiscalCode>%1$s</fiscalCode>
+				        <outcome>OK</outcome>
+				        <creditorReferenceId>%5$s</creditorReferenceId>
+				        <paymentAmount>16.00</paymentAmount>
+				        <description>test</description>
+				        <companyName>Comune di Test</companyName>
+				        <debtor>
+				          <uniqueIdentifier>
+				            <entityUniqueIdentifierType>F</entityUniqueIdentifierType>
+				            <entityUniqueIdentifierValue>RSSMRA80A01H501U</entityUniqueIdentifierValue>
+				          </uniqueIdentifier>
+				          <fullName>Mario Rossi</fullName>
+				        </debtor>
+				        <transferList>
+				          <transfer>
+				            <idTransfer>1</idTransfer>
+				            <transferAmount>8.00</transferAmount>
+				            <fiscalCodePA>%1$s</fiscalCodePA>
+				            <IBAN>IT60X0542811101000000123456</IBAN>
+				            <remittanceInformation>test</remittanceInformation>
+				            <transferCategory>9/0101108TS/</transferCategory>
+				          </transfer>
+				          <transfer>
+				            <idTransfer>2</idTransfer>
+				            <transferAmount>8.00</transferAmount>
+				            <fiscalCodePA>%1$s</fiscalCodePA>
+				            <IBAN>IT60X0542811101000000123456</IBAN>
+				            <remittanceInformation>test</remittanceInformation>
+				            <transferCategory>9/0101108TS/</transferCategory>
+				          </transfer>
+				        </transferList>
+				        <idPSP>PSP1</idPSP>
+				        <PSPCompanyName>Psp Uno</PSPCompanyName>
+				        <idChannel>CH1</idChannel>
+				        <channelDescription>canale</channelDescription>
+				      </receipt>
+				    </pafn:paSendRTReq>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, receiptId, identificativi.iuv());
+
+		ResponseEntity<String> risposta = invia(envelopeConDueTrasferimenti);
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_SEMANTICA</faultCode>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RT_RIFIUTATA_PA");
+		assertThat(jdbcTemplate.queryForObject("select xml_rt is not null from rpt where iuv = ?", Boolean.class,
+				identificativi.iuv())).isTrue();
+	}
+
 	@Test
 	void paSendRTRestituisceFaultPerRptSconosciuta() {
 		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999996L);
@@ -609,6 +691,237 @@ class PaForNodeEndpointTest {
 				identificativi.iuv(), "altro-" + identificativi.iuv())).isEqualTo("RPT_ACCETTATA_NODO");
 		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
 				identificativi.iuv())).isEqualTo(2);
+	}
+
+	private String envelopeSendRTV2(String idPA, String idBrokerPA, String idStation, String receiptId,
+			String fiscalCode, String creditorReferenceId, double paymentAmount, int idTransfer,
+			double transferAmount) {
+		return """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paSendRTV2Request>
+				      <idPA>%s</idPA>
+				      <idBrokerPA>%s</idBrokerPA>
+				      <idStation>%s</idStation>
+				      <receipt>
+				        <receiptId>%s</receiptId>
+				        <noticeNumber>300000000000000001</noticeNumber>
+				        <fiscalCode>%s</fiscalCode>
+				        <outcome>OK</outcome>
+				        <creditorReferenceId>%s</creditorReferenceId>
+				        <paymentAmount>%s</paymentAmount>
+				        <description>test</description>
+				        <companyName>Comune di Test</companyName>
+				        <debtor>
+				          <uniqueIdentifier>
+				            <entityUniqueIdentifierType>F</entityUniqueIdentifierType>
+				            <entityUniqueIdentifierValue>RSSMRA80A01H501U</entityUniqueIdentifierValue>
+				          </uniqueIdentifier>
+				          <fullName>Mario Rossi</fullName>
+				        </debtor>
+				        <transferList>
+				          <transfer>
+				            <idTransfer>%s</idTransfer>
+				            <transferAmount>%s</transferAmount>
+				            <fiscalCodePA>%s</fiscalCodePA>
+				            <IBAN>IT60X0542811101000000123456</IBAN>
+				            <remittanceInformation>test</remittanceInformation>
+				            <transferCategory>9/0101108TS/</transferCategory>
+				          </transfer>
+				        </transferList>
+				        <idPSP>PSP1</idPSP>
+				        <PSPCompanyName>Psp Uno</PSPCompanyName>
+				        <idChannel>CH1</idChannel>
+				        <channelDescription>canale</channelDescription>
+				      </receipt>
+				    </pafn:paSendRTV2Request>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(idPA, idBrokerPA, idStation, receiptId, fiscalCode, creditorReferenceId, paymentAmount,
+				idTransfer, transferAmount, fiscalCode);
+	}
+
+	/**
+	 * Asimmetria col caso V1 ({@link
+	 * #paSendRTRicostruisceStandinAncheConUnaRptDiAltroModelloGiaAccettataDalNodo}): su
+	 * {@code paSendRTV2} una RPT di un ALTRO modello BLOCCA lo standin — il legacy qui non
+	 * filtra per modello. Stato diverso da {@code RPT_ACCETTATA_NODO} apposta: altrimenti
+	 * la ricerca (anch'essa non filtrata per modello su V2) la troverebbe e l'userebbe
+	 * direttamente come RPT in attesa, senza mai arrivare al controllo dello standin.
+	 */
+	@Test
+	void paSendRTV2RestituisceFaultSeEsisteGiaUnaRptDiAltroModello() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-standin-v2-altro-modello", 16.00);
+		Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(idDominio, identificativi.iuv()).orElseThrow();
+
+		Rpt altroModello = new Rpt();
+		altroModello.setIdVersamento(pendenza.getId());
+		altroModello.setIuv(identificativi.iuv());
+		altroModello.setIur("altro-" + identificativi.iuv());
+		altroModello.setCodDominio(COD_DOMINIO);
+		altroModello.setCodStazione(COD_STAZIONE);
+		altroModello.setCodMsgRichiesta("msg-altro-" + identificativi.iuv());
+		altroModello.setStato("RPT_RIFIUTATA_NODO");
+		altroModello.setVersione("SANP_240");
+		altroModello.setModelloPagamento("0");
+		OffsetDateTime adesso = OffsetDateTime.now();
+		altroModello.setDataMsgRichiesta(adesso);
+		altroModello.setDataAggiornamentoStato(adesso);
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			entityManager.persist(altroModello);
+			entityManager.flush();
+		});
+
+		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RPT_SCONOSCIUTA</faultCode>");
+		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
+				identificativi.iuv())).isEqualTo(1);
+	}
+
+	/**
+	 * Percorso a lieto fine completo di {@code paSendRTV2} (attivazione con
+	 * {@code paGetPaymentV2}, poi ricevuta con {@code paSendRTV2}): a differenza dei test
+	 * di standin sopra, qui la RPT ha {@code xmlRpt} popolato dall'attivazione, quindi la
+	 * validazione semantica REALE ({@code validaSemanticaV2}, incluso il controllo su
+	 * {@code UniqueIdentifierDebtor} presente solo su V2) viene davvero esercitata.
+	 */
+	@Test
+	void paSendRTV2AcquisisceLaRicevutaDopoLattivazione() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-sendrtv2-1", 16.00);
+
+		ResponseEntity<String> attivazione = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+	}
+
+	/**
+	 * Caso ibrido (punto #17 del design doc, confermato scenario reale da pagoPA): RPT
+	 * attivata con {@code paGetPaymentV2} ma ricevuta arrivata tramite {@code paSendRT}
+	 * (V1) — la validazione semantica deve passare per il ramo V2 ({@code
+	 * PaSendRTService#validaSemanticaIbridaV2RptV1Rt}), non quello V1, e la RPT va marcata
+	 * {@code RPTV2_RTV1}.
+	 */
+	@Test
+	void paSendRTAcquisisceLaRicevutaDopoAttivazioneV2CasoIbrido() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-ibrido-v2rtv1", 16.00);
+
+		ResponseEntity<String> attivazione = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+		assertThat(jdbcTemplate.queryForObject("select versione from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RPTV2_RTV1");
+	}
+
+	/**
+	 * Caso simmetrico (punto #18): RPT attivata con {@code paGetPayment} (V1) ma ricevuta
+	 * arrivata tramite {@code paSendRTV2} — validazione nel ramo {@code
+	 * validaSemanticaIbridaV1RptV2Rt}, RPT marcata {@code RPTV1_RTV2}. Nessun ramo SANP_230
+	 * (punto #19, non raggiungibile per costruzione in questo modulo).
+	 */
+	@Test
+	void paSendRTV2AcquisisceLaRicevutaDopoAttivazioneV1CasoIbrido() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-ibrido-v1rtv2", 16.00);
+
+		ResponseEntity<String> attivazione = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+		assertThat(jdbcTemplate.queryForObject("select versione from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RPTV1_RTV2");
+	}
+
+	/**
+	 * {@code UniqueIdentifierDebtor} e' fatale solo su V2 (il legacy non confronta il
+	 * debitore affatto su V1, vedi Javadoc di {@code PaSendRTService#validaSemanticaV2}).
+	 */
+	@Test
+	void paSendRTV2RestituisceFaultSeLidentificativoDelDebitoreNonCorrisponde() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-sendrtv2-debitore", 16.00);
+
+		ResponseEntity<String> attivazione = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				COD_DOMINIO, identificativi.numeroAvviso()));
+		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+
+		String receiptId = "receipt-" + identificativi.iuv();
+		String envelopeConDebitoreDiverso = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paSendRTV2Request>
+				      <idPA>%1$s</idPA>
+				      <idBrokerPA>%2$s</idBrokerPA>
+				      <idStation>%3$s</idStation>
+				      <receipt>
+				        <receiptId>%4$s</receiptId>
+				        <noticeNumber>300000000000000001</noticeNumber>
+				        <fiscalCode>%1$s</fiscalCode>
+				        <outcome>OK</outcome>
+				        <creditorReferenceId>%5$s</creditorReferenceId>
+				        <paymentAmount>16.00</paymentAmount>
+				        <description>test</description>
+				        <companyName>Comune di Test</companyName>
+				        <debtor>
+				          <uniqueIdentifier>
+				            <entityUniqueIdentifierType>F</entityUniqueIdentifierType>
+				            <entityUniqueIdentifierValue>VRDGPP85T10H501X</entityUniqueIdentifierValue>
+				          </uniqueIdentifier>
+				          <fullName>Altra Persona</fullName>
+				        </debtor>
+				        <transferList>
+				          <transfer>
+				            <idTransfer>1</idTransfer>
+				            <transferAmount>16.00</transferAmount>
+				            <fiscalCodePA>%1$s</fiscalCodePA>
+				            <IBAN>IT60X0542811101000000123456</IBAN>
+				            <remittanceInformation>test</remittanceInformation>
+				            <transferCategory>9/0101108TS/</transferCategory>
+				          </transfer>
+				        </transferList>
+				        <idPSP>PSP1</idPSP>
+				        <PSPCompanyName>Psp Uno</PSPCompanyName>
+				        <idChannel>CH1</idChannel>
+				        <channelDescription>canale</channelDescription>
+				      </receipt>
+				    </pafn:paSendRTV2Request>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, receiptId, identificativi.iuv());
+
+		ResponseEntity<String> risposta = invia(envelopeConDebitoreDiverso);
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_SEMANTICA</faultCode>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ?", String.class,
+				identificativi.iuv())).isEqualTo("RT_RIFIUTATA_PA");
 	}
 
 	@Test

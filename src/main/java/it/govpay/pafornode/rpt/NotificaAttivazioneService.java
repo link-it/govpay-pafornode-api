@@ -22,15 +22,19 @@ import it.govpay.pendenze.model.TipoNotifica;
 import it.govpay.pendenze.repository.NotificaRepository;
 
 /**
- * Accodamento della notifica di attivazione RPT verso il connettore di integrazione
- * dell'applicazione, analisi completa del legacy ({@code it.govpay.core.business.Notifica#inserisciNotifica})
- * nel design doc: nessuna notifica se l'applicazione non ha un connettore configurato, e per
- * il tipo ATTIVAZIONE (a differenza di RICEVUTA, non ancora implementata) solo se il
- * connettore e' in versione {@code REST_1}.
+ * Accodamento delle notifiche RPT (ATTIVAZIONE e RICEVUTA) verso il connettore di
+ * integrazione dell'applicazione, analisi completa del legacy
+ * ({@code it.govpay.core.business.Notifica#inserisciNotifica}) nel design doc: nessuna
+ * notifica se l'applicazione non ha un connettore configurato. Per {@link #accoda}
+ * (ATTIVAZIONE) solo se il connettore e' in versione {@code REST_1} — il client EC v2 non
+ * prevede questo tipo di notifica. Per {@link #accodaRicevuta} nessun filtro di versione:
+ * accodata sempre, sia su connettore v1 che v2 (commento del legacy stesso: "la versione
+ * V2 delle api client prevede solamente l'invio delle notifiche di tipo ricevuta").
  *
- * <p><b>Solo accodamento</b>: la spedizione effettiva (chiamata al connettore, con
- * ritentativi) non e' ancora implementata — la riga resta {@code DA_SPEDIRE}, candidata per
- * un futuro processo di spedizione, invece del tentativo sincrono immediato del legacy.
+ * <p><b>Solo accodamento</b>: la spedizione effettiva verso l'EC e' responsabilita' di
+ * {@code govpay-notify-batch} (progetto separato, gia' esistente — legge dalla stessa
+ * tabella {@code notifiche} le righe {@code DA_SPEDIRE}), non di questo servizio: la riga
+ * resta {@code DA_SPEDIRE}, candidata alla prossima esecuzione di quel batch.</p>
  */
 @Service
 public class NotificaAttivazioneService {
@@ -72,6 +76,36 @@ public class NotificaAttivazioneService {
 		notifica.setIdApplicazione(applicazione.getId());
 		notifica.setIdRpt(rpt.getId());
 		notifica.setTipo(TipoNotifica.ATTIVAZIONE);
+		notifica.setDataCreazione(adesso);
+		notifica.setStato(StatoSpedizioneNotifica.DA_SPEDIRE);
+		notifica.setDataAggiornamentoStato(adesso);
+		notifica.setDataProssimaSpedizione(adesso);
+		notificaRepository.save(notifica);
+	}
+
+	/**
+	 * Come {@link #accoda}, per la notifica RICEVUTA — porting di
+	 * {@code CtReceiptUtils.acquisisciRT}/{@code CtReceiptV2Utils.acquisisciRT} (accodata
+	 * incondizionatamente dopo l'acquisizione di una ricevuta, sia per esito OK sia KO).
+	 * Nessun filtro per versione del connettore (vedi Javadoc di classe): basta che un
+	 * connettore sia configurato.
+	 */
+	@Transactional
+	public void accodaRicevuta(Pendenza pendenza, Rpt rpt) {
+		ApplicazioneEntity applicazione = applicazioneRepository.findById(pendenza.getIdApplicazione()).orElse(null);
+		if (applicazione == null || applicazione.getCodConnettoreIntegrazione() == null
+				|| applicazione.getCodConnettoreIntegrazione().isBlank()) {
+			return;
+		}
+		if (connettoreEntityRepository.findByCodConnettore(applicazione.getCodConnettoreIntegrazione()).isEmpty()) {
+			return;
+		}
+
+		OffsetDateTime adesso = OffsetDateTime.now(clock);
+		Notifica notifica = new Notifica();
+		notifica.setIdApplicazione(applicazione.getId());
+		notifica.setIdRpt(rpt.getId());
+		notifica.setTipo(TipoNotifica.RICEVUTA);
 		notifica.setDataCreazione(adesso);
 		notifica.setStato(StatoSpedizioneNotifica.DA_SPEDIRE);
 		notifica.setDataAggiornamentoStato(adesso);

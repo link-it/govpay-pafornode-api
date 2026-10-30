@@ -58,11 +58,12 @@ pendenza/RPT/pagamento) nata in govpay-common-pendenze, **spostata qui** (§3dec
 2026-10-29, decisione del committente): pafornode-api è l'unico punto da cui GovPay
 acquisisce ricevute pagoPA, nessun secondo consumer ne giustifica più la condivisione.
 `PaSendRTService` per i controlli/dati specifici del contratto paForNode (autorizzazione,
-ricerca/lock RPT, deserializzazione del payload originale, validazione semantica
-semplificata). Ricostruzione "standin" (RPT mai attivata da GovPay) **implementata**
-(§3undecies, 2026-10-29). Resta aperta solo la validazione semantica completa (incluso il
-caso ibrido RPTV2_RTV1) — vedi punto aperto #14. 221/221 test verdi in
-govpay-common-pendenze, 125/125 in govpay-pafornode-api.
+ricerca/lock RPT, deserializzazione del payload originale, validazione semantica). Ricostruzione
+"standin" (RPT mai attivata da GovPay) **implementata** (§3undecies, 2026-10-29).
+Validazione semantica completa, inclusi i casi ibridi RPTV2_RTV1/RPTV1_RTV2, **completata**
+(§3sexdecies, 2026-10-30). Punto #20 (`statoPagamento` e anomalo forzato su esito gia'
+definitivo) risolto (§3septdecies, 2026-10-30). 221/221 test verdi in
+govpay-common-pendenze, 148/148 in govpay-pafornode-api.
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -806,6 +807,258 @@ ultimi due a dimostrare che entrambi i componenti sono verificati separatamente)
 `IllegalStateException`, non più con NPE). 221/221 test verdi in govpay-common-pendenze
 (+3), 125/125 in govpay-pafornode-api (+6 rispetto a §3undecies).
 
+## 3terdecies. Inventario esaustivo e completamento funzionalita' di acquisizione RT (2026-10-29)
+
+**Decisione del committente**: tutte le funzionalita' presenti nel legacy per l'acquisizione
+RT vanno riportate, una alla volta. Analisi esaustiva (lettura integrale di
+`CtReceiptUtils.java`, `CtReceiptV2Utils.java`, `RtUtils.java`) oltre alla sola validazione
+semantica, gia' coperta da §3octies/§3undecies — nove punti individuati, quattro
+implementati in questo giro:
+
+1. **Asimmetria nel filtro per modello dello standin su V2** — scoperta nuova: il legacy
+   filtra lo standin per modello `ATTIVATO_PRESSO_PSP` solo su `paSendRT` (V1,
+   `CtReceiptUtils.acquisisciRT`, riga 210: `getRpt(codDominio, iuv,
+   ModelloPagamento.ATTIVATO_PRESSO_PSP, null)`); su `paSendRTV2`
+   (`CtReceiptV2Utils.acquisisciRT`, riga 222) NON filtra affatto
+   (`getRpt(codDominio, iuv, null, null)`) — una RPT di QUALUNQUE modello blocca lo
+   standin su V2. Corretto aggiungendo le varianti non filtrate `RptRepository
+   #findByIdVersamentoAndStato`/`#existsByIdVersamento` (accanto alle varianti filtrate
+   per V1), e un parametro `filtraPerModelloPsp` in `PaSendRTService
+   #trovaRptInAttesa`/`#standin` che seleziona la query giusta per operazione.
+2. **Gestione del Pagamento preesistente, tre casi distinti** (`AcquisizioneRicevutaService
+   #acquisisci`): (a) gia' collegato a un'altra RPT → errore esplicito
+   (`IllegalStateException`), mai sovrascritto silenziosamente; (b) esistente ma senza RPT
+   collegata (stato `PAGATO_SENZA_RPT` — rendicontato prima della ricevuta, campo gia'
+   presente nel modello v3-nativo ma non ancora usato da nessun produttore, vedi punto 6
+   sotto) → aggiornato e collegato, non duplicato; (c) gia' `INCASSATO` → nessuna modifica
+   (`continue`, stesso comportamento del legacy). Prima di questo fix, il servizio faceva
+   sempre un semplice "trova per questa chiave o creane uno nuovo", sovrascrivendo
+   silenziosamente qualunque caso trovato.
+3. **Persistenza `RT_RIFIUTATA_PA` sul fallimento della validazione semantica** — il
+   legacy aggiorna comunque la RPT (stato, `xmlRt` grezzo, messaggio del controllo
+   fallito) PRIMA di rilanciare il fault `PAA_SEMANTICA`; nel porting l'intera transazione
+   veniva scartata col fault, nessuna traccia della ricevuta rifiutata restava a DB.
+   **Gotcha di design**: `RptAttivazioneService#rifiutaPerValidazioneSemantica` NON usa
+   una transazione propria (niente `REQUIRES_NEW`) — lo farebbe su una connessione
+   diversa che si bloccherebbe in attesa del lock pessimistico che il chiamante detiene
+   gia' sulla stessa riga (deadlock). Partecipa invece alla transazione del chiamante, che
+   usa `@Transactional(noRollbackFor = NdpException.class)` su `eseguiSendRT`/`V2` per
+   evitare che il rollback automatico annulli anche questa scrittura — sicuro perche'
+   nessun'altra `NdpException` di questi due metodi ha una scrittura pendente da
+   preservare (documentato nel Javadoc, da riverificare se si aggiunge un futuro ramo che
+   scrive prima di un fault).
+4. **Controlli fatali completi della validazione semantica** (`PaSendRTService
+   #validaSemantica`/`V2`): oltre a `creditorReferenceId` e numero di trasferimenti (gia'
+   presenti), aggiunti "importo totale pagato ≠ somma dei singoli importi ricevuti" e
+   "esito KO con importo ≠ 0" (entrambi su V1 e V2); su V2 anche `UniqueIdentifierDebtor`
+   (identificativo del debitore), fatale SOLO su questa versione nel legacy — V1 non
+   confronta il debitore affatto.
+
+**Punti individuati, non ancora implementati** (vedi §4, nuovi punti aperti #15-#20):
+5. notifica EC "RICEVUTA" mai spedita; 6. riconciliazione di una `Rendicontazione`
+anomala collegata al pagamento; 7-8. i due casi ibridi RPT-formato/RT-formato
+(`RPTV2_RTV1`/`RPTV1_RTV2`); 9. RPT pre-paForNode (SANP_230) contro ricevuta
+V1/V2 — da confermare col committente se raggiungibile su un'istanza v3-nativa nuova
+prima di implementarlo; due dettagli minori da verificare (`Pendenza.statoPagamento` non
+impostato da `registraEsitoPendenza`? caso limite su `anomalo` forzato quando la pendenza
+era gia' `ESEGUITO` nel suo complesso).
+
+**Confermato fuori perimetro, non gap**: campi RPT solo-wrapper-v2 legacy
+(`denominazioneAttestante`/`codPsp`/`codCanale`/`identificativoAttestante`/
+`tipoIdentificativoAttestante`) e `commissioniPsp` sul pagamento — non esistono
+sull'entity v3-nativa, nessun consumer li legge, scelta di design gia' nota.
+
+**Test**: `RptRepository` (nuovi metodi, nessun test diretto — coperti dai test di
+`PaSendRTService`), `PaSendRTServiceTest` (+4: asimmetria standin V2, persistenza del
+rifiuto semantico — solo l'invocazione, mock), `AcquisizioneRicevutaServiceTest` (+3: i
+tre casi del pagamento preesistente), `PaForNodeEndpointTest` (+5: asimmetria standin V2
+con RPT reale, persistenza RT_RIFIUTATA_PA con RPT reale, percorso a lieto fine V2
+end-to-end — mai testato prima, lo standin ne mascherava l'assenza — e il nuovo controllo
+sul debitore su V2). 134/134 test verdi in govpay-pafornode-api (+9 rispetto a
+§3duodecies), 221/221 in govpay-common-pendenze (solo nuovi metodi repository, nessun
+nuovo test diretto).
+
+## 3quaterdecies. Riconciliazione rendicontazione anomala (punto #16, 2026-10-29/30)
+
+**Decisione del committente**: il punto #15 (notifica EC "RICEVUTA") resta in sospeso in
+attesa di una decisione (le notifiche già scartate finora, #11, erano specifiche del
+contratto v1 — da chiarire se questo caso è analogo). Si procede dal punto #16.
+
+Porting di `RtUtils#checkEsistenzaRendicontazioneAnomalaPerIlPagamento`: quando un
+pagamento viene acquisito via RT, si cerca una `Rendicontazione` ANOMALA con gli stessi
+estremi (dominio/iuv/iur/indiceDati) arrivata PRIMA della ricevuta (via un flusso di
+rendicontazione pagoPA) e non ancora collegata a nessun pagamento — se esiste, viene
+richiusa (`stato=OK`, anomalie azzerate) e collegata al pagamento appena acquisito.
+
+**Due campi aggiunti all'entity `Rendicontazione`** (govpay-common-pendenze): `idPagamento`
+(FK fisica reale verso `pagamenti(id)`, colonna già esistente ma non mappata finora — la
+Javadoc della classe la dava erroneamente "fuori scopo") e `anomalie` (testo grezzo della
+colonna legacy omonima, **non** spacchettato in oggetti strutturati: nessun consumatore
+v3-nativo legge le singole anomalie, la riconciliazione la azzera semplicemente). Nuovo
+metodo `RendicontazioneRepository#findAnomalaNonCollegata`, fedele a una sottigliezza del
+legacy (`RendicontazioniBD#getRendicontazione`): una rendicontazione con `indiceDati`
+assente (`null`) corrisponde a QUALUNQUE indice richiesto, non è un mancato confronto.
+
+**Gotcha scoperto**: govpay-pafornode-api mantiene una COPIA PROPRIA dello schema di test
+(`src/test/resources/db/schema-pendenze-test.sql`), non condivisa dal jar di
+govpay-common-pendenze — ogni estensione di un'entity già esistente richiede aggiornare
+ENTRAMBE le copie dello schema di test, non solo quella del modulo che definisce
+l'entity. Scoperto da un fallimento di avvio del contesto Spring (`SchemaManagementException:
+missing column`) apparentemente slegato dalle modifiche, in un modulo diverso da quello
+appena toccato.
+
+**Test**: `AcquisizioneRicevutaServiceTest` (+2: rendicontazione anomala richiusa e
+collegata; `indiceDati` assente corrisponde comunque). 221/221 test verdi in
+govpay-common-pendenze (solo nuovi campi/metodo repository, nessun nuovo test diretto),
+136/136 in govpay-pafornode-api (+2 rispetto a §3terdecies).
+
+## 3quindecies. Notifica EC "RICEVUTA" (punto #15, 2026-10-30)
+
+**Decisione del committente**: si procede con la proposta (accodamento, non spedizione —
+vedi sotto). Nessun caso analogo a #11 (notifiche specifiche v1): la spedizione RICEVUTA è
+già gestita da un progetto separato, già esistente.
+
+**Riepilogo del comportamento legacy da riportare**: al termine di un'acquisizione di
+ricevuta riuscita, `CtReceiptUtils.acquisisciRT`/`CtReceiptV2Utils.acquisisciRT` NON si
+limitano ad accodare la notifica `RICEVUTA` — fanno insert in **tre** tabelle distinte, per
+TRE canali di avviso indipendenti verso soggetti diversi:
+
+- `notifiche` (verso l'EC, tramite il connettore di integrazione dell'applicazione) — il
+  canale di cui questo punto #15 si occupa;
+- `promemoria` (verso il debitore, via email) — già portato in `AcquisizioneRicevutaService
+  #accodaAvvisatura` (§3decies);
+- `notifiche_appio` (verso il debitore, via app IO) — stesso metodo, stessa sezione.
+
+I tre canali erano già distribuiti su due metodi prima di questo punto
+(`accodaAvvisatura` per gli ultimi due, mancante il primo): con #15 implementato,
+`AcquisizioneRicevutaService#acquisisci` ora ripristina tutti e tre, fedele al legacy.
+
+**Scoperta chiave**: `govpay-notify-batch` (progetto sibling, già esistente) implementa
+già il lato SPEDIZIONE per `RICEVUTA` (`RtSendReader`/`RtSendJobConfiguration`/
+`EnteRicevutaApiService`/`RicevutaV2Mapper`, che leggono dalla stessa tabella `notifiche`
+le righe `tipoEsito=RICEVUTA`/`stato=DA_SPEDIRE`). Il compito di questo punto è quindi
+limitato all'accodamento (stessa riga, nessuna spedizione da scrivere qui).
+
+**Implementazione**: nuovo `NotificaAttivazioneService#accodaRicevuta(Pendenza, Rpt)`,
+gemello di `#accoda` (ATTIVAZIONE) ma SENZA il filtro sulla versione del connettore — il
+legacy stesso lo documenta (`it.govpay.core.business.Notifica#inserisciNotifica`, riga 58:
+"la versione V2 delle api client prevede solamente l'invio delle notifiche di tipo
+ricevuta"): RICEVUTA si accoda sia su connettore v1 che v2, a differenza di ATTIVAZIONE
+(solo v1). Richiamato da `AcquisizioneRicevutaService#acquisisci` SIA sul ramo OK (dopo
+`accodaAvvisatura`) SIA sul ramo KO (prima del `return` anticipato) — incondizionato
+sull'esito, stesso comportamento del legacy.
+
+**Gotcha di test scoperto durante la verifica**: `NotificaAttivazioneServiceTest` non
+aveva `@Transactional` di classe (a differenza di `AcquisizioneRicevutaServiceTest`) — le
+`Notifica` inserite da un test restavano committed sulla stessa istanza H2 condivisa dal
+contesto Spring (stessa configurazione `@SpringBootTest(classes = Application.class)` di
+`RptAttivazioneServiceTest`), visibili sia ai test successivi della stessa classe (ordine
+JUnit non garantito) sia a `AcquisizioneRicevutaServiceTest` quando riusa il contesto
+cache. Innocuo con solo 3 test originari (tutti e tre passavano per coincidenza
+dell'ordine); i 3 nuovi test per `accodaRicevuta` hanno cambiato l'ordine e fatto
+emergere il problema. **Fix**: `@Transactional` aggiunto alla classe, stesso pattern già
+in uso in `AcquisizioneRicevutaServiceTest`.
+
+**Test**: `NotificaAttivazioneServiceTest` (+3: nessun connettore → nulla accodato;
+connettore v1 → accodato; connettore v2 → accodato comunque, il caso che prova
+l'asimmetria con ATTIVAZIONE), `AcquisizioneRicevutaServiceTest` (+2: notifica accodata su
+esito OK, notifica accodata anche su esito KO). 141/141 test verdi in
+govpay-pafornode-api (+5 rispetto a §3quaterdecies), 221/221 invariato in
+govpay-common-pendenze.
+
+## 3sexdecies. Casi ibridi RPTV2_RTV1/RPTV1_RTV2 (punti #17/#18, 2026-10-30)
+
+**Decisione del committente**: confermati scenari reali (non teorici) in produzione —
+"e' successo che [pagoPA] mandasse chiamate con primitive incrociate" — quindi da
+implementare, non solo documentare come edge case.
+
+**Meccanismo**, letto riga per riga da `CtReceiptUtils`/`CtReceiptV2Utils` del monolite:
+la selezione del deserializzatore/validatore dipende dalla VERSIONE DELLA RPT SALVATA
+(`rpt.getVersione()`), non dall'operazione SOAP che ha portato la ricevuta. Se la versione
+trovata non e' quella che l'operazione chiamata si aspetta, scatta il ramo ibrido: la RPT
+viene marcata con un valore dedicato (persistito, non solo un flag di validazione
+temporaneo) e deserializzata/validata nel formato in cui e' STATA REALMENTE attivata.
+
+- `PaSendRTService#eseguiSendRT` (V1): se `rpt.getVersione() != SANP_240`, marca
+  `VERSIONE_RPTV2_RTV1`, deserializza con `deserializzaDatiV2` e valida con il nuovo
+  `validaSemanticaIbridaV2RptV1Rt(CtPaymentPAV2, CtReceipt, String)` — porting di
+  `CtReceiptUtils.validaSemantica(PaGetPaymentV2Response, PaSendRTReq)`.
+- `PaSendRTService#eseguiSendRTV2` (V2): se `rpt.getVersione() != SANP_321_V2`, marca
+  `VERSIONE_RPTV1_RTV2`, deserializza con `deserializzaDati` e valida con il nuovo
+  `validaSemanticaIbridaV1RptV2Rt(CtPaymentPA, CtReceiptV2, String)` — porting di
+  `CtReceiptV2Utils.validaSemantica(PaGetPaymentRes, PaSendRTV2Request)`.
+
+**Semplificazione rispetto al legacy**: sul lato V2, il legacy ha una dispatch a TRE vie
+(normale / ibrido V1-V2 / SANP_230, quest'ultimo con un terzo deserializzatore
+`CtRichiestaPagamentoTelematico`). Il ramo SANP_230 non e' stato riportato: confermato dal
+committente (punto #19) che questo modulo non gestira' mai transazioni in quel formato —
+la dispatch nel porting resta quindi a due vie su entrambi i lati, identica nella forma a
+quella gia' presente sul lato V1 del legacy stesso (che non ha mai avuto un terzo ramo).
+
+**Correzione rispetto a una prima lettura**: nessuno dei due casi ibridi include il
+controllo fatale sul debitore (`UniqueIdentifierDebtor`) — ne' `CtReceiptUtils.
+validaSemantica(PaGetPaymentV2Response, PaSendRTReq)` ne' `CtReceiptV2Utils.
+validaSemantica(PaGetPaymentRes, PaSendRTV2Request)` lo chiamano, pur avendo entrambi i
+tipi (`CtPaymentPA`/`CtReceipt`) un campo `Debtor` disponibile. Il controllo esiste SOLO
+nel percorso V2-V2 puro (`validaSemanticaV2`, gia' implementato al punto 4/§3terdecies) —
+un'asimmetria del legacy stesso, non una scelta di questo porting.
+
+**Multi-debitore v3**: nessun impatto su questa validazione — `CtPaymentPaBuilder`/
+`CtPaymentPaV2Builder` risolvono gia' un solo "debitore principale" al momento
+dell'attivazione della RPT, congelato nell'XML che questo punto rilegge; nessuna rilettura
+di `PosizioneDebitoria#getSoggettiDebitori()` necessaria qui.
+
+**Nessuna modifica di schema**: `rpt.versione` e' una colonna `VARCHAR(35)` senza vincolo
+sui valori ammessi — i due nuovi valori (`RPTV2_RTV1`, `RPTV1_RTV2`, 10 caratteri ciascuno)
+rientrano senza modifiche.
+
+**Test**: `PaSendRTServiceTest` (+4: happy path e rifiuto persistito per entrambi i casi,
+livello mock) e `PaForNodeEndpointTest` (+2: percorso SOAP reale completo — attivazione in
+un formato, ricevuta nell'altro, verifica che `rpt.versione` risulti marcata di
+conseguenza). 147/147 test verdi in govpay-pafornode-api (+6 rispetto a §3quindecies),
+221/221 invariato in govpay-common-pendenze.
+
+## 3septdecies. `statoPagamento` e anomalo forzato su esito gia' definitivo (punto #20, 2026-10-30)
+
+**Primo dettaglio, confermato gap reale (non ipotetico)**: `PosizioneDebitoriaService
+#registraEsitoPendenza` scrive solo `pendenza.stato` — mai `pendenza.statoPagamento`
+(verificato: nessun `setStatoPagamento` in tutto `govpay-common-pendenze`, resta sempre al
+default `NON_PAGATO` dichiarato sull'entity). Nel legacy, invece,
+`RtUtils.schedulazionePromemoriaENotificaAppIO` — chiamato da ENTRAMBI `CtReceiptUtils`/
+`CtReceiptV2Utils.acquisisciRT`, lo stesso punto che `AcquisizioneRicevutaService#acquisisci`
+sostituisce — imposta incondizionatamente `StatoPagamento.PAGATO` su esito eseguito/
+parzialmente eseguito. **Fix**: `AcquisizioneRicevutaService#acquisisci` imposta ora
+`pendenza.setStatoPagamento(StatoPagamento.PAGATO)` nel ramo OK, vicino a
+`setDataPagamento`/`setImportoPagato` — non dentro `registraEsitoPendenza`, il cui Javadoc
+dichiara esplicitamente uno scope minimo (solo `stato`/cascata opzione, non gli altri campi
+di esito pagamento, elencati li' come fuori scope) e che resta un metodo condiviso/generico,
+non specifico di questo caso d'uso.
+
+**Secondo dettaglio, confermato RAGGIUNGIBILE (non "probabilmente irraggiungibile" come
+ipotizzato inizialmente)**: `RtUtils#impostaNuovoStatoVersamento` (ramo rilevante per
+paForNode: solo `PAGAMENTO_ESEGUITO`, essendo l'esito del contratto binario OK/KO — gli
+esiti parziali non sono mai raggiungibili qui, gia' verificato) forza `anomalo=true`
+INCONDIZIONATAMENTE quando lo stato della pendenza PRIMA di questa ricevuta non era gia'
+`ANNULLATO`/`NON_ESEGUITO` — indipendentemente da `irregolare` (duplicazione di una singola
+voce). Il porting v3 calcolava l'anomalia SOLO da `irregolare`. Lo scenario che sfuggiva:
+una pendenza gia' `ESEGUITO` con tutti i `Pagamento` collegati gia' `INCASSATO`
+(rendicontazione gia' chiusa il ciclo) — una ricevuta duplicata/di retry (consegna doppia
+plausibile, stesso tipo di scenario reale confermato dal committente per i punti #17/#18) i
+cui trasferimenti puntano tutti a `Pagamento` esistenti `INCASSATO` fa `continue` nel ciclo
+PRIMA di raggiungere il ramo `nuovo` dove si imposta `irregolare` — che quindi resta
+`false`, nessuna anomalia segnalata, nonostante la pendenza fosse gia' conclusa.
+
+**Fix**: `acquisisci` cattura `pendenza.getStato()` all'inizio del metodo (prima di
+qualunque scrittura); dopo il ciclo, `anomalo=true` se `irregolare` OPPURE se lo stato
+catturato non era `NON_ESEGUITO`/`ANNULLATO` — stessa condizione del legacy. La descrizione
+dell'anomalia (`"Acquisito pagamento duplicato"`) resta impostata solo quando `irregolare`
+e' vero, come nel legacy (il ramo "gia' eseguita" da solo non la sovrascrive).
+
+**Test**: 2 nuove asserzioni su `statoPagamento` nei test OK/KO esistenti + 1 nuovo test
+(`ricevutaDuplicataSuPendenzaGiaEseguitaVieneSegnalataAnomala`, pendenza gia' `ESEGUITO` con
+pagamento gia' `INCASSATO`, verifica `anomalo=true` pur con `irregolare` falso). 148/148
+test verdi in govpay-pafornode-api, 221/221 invariato in govpay-common-pendenze.
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -914,3 +1167,44 @@ ultimi due a dimostrare che entrambi i componenti sono verificati separatamente)
     aggiunta in `ValidatorePosizioneDebitoria` (creazione e aggiornamento) più un controllo
     esplicito in `ContabilitaResolver#transferCategory` (entrambi i componenti, non solo
     uno) per i dati storici già incompleti.
+14. ~~Validazione semantica completa, incl. caso ibrido RPTV2_RTV1/RPTV1_RTV2~~ — **risolto**
+    (§3octies/§3undecies per il percorso "normale", §3terdecies punto 4 per i controlli
+    fatali completi, §3sexdecies per i due casi ibridi #17/#18).
+15. ~~Notifica EC "RICEVUTA" mai spedita~~ — **risolto** (§3quindecies, 2026-10-30): nuovo
+    `NotificaAttivazioneService#accodaRicevuta` (nessun filtro di versione connettore, a
+    differenza di `#accoda`), richiamato da `AcquisizioneRicevutaService#acquisisci` su
+    entrambi gli esiti OK/KO. Solo accodamento: la spedizione è già gestita da
+    `govpay-notify-batch` (progetto sibling, già esistente, stessa tabella `notifiche`).
+    Nota collegata: la ricevuta OK produce sempre tre insert indipendenti — `notifiche`
+    (questo punto), `promemoria` e `notifiche_appio` (§3decies, `#accodaAvvisatura`) — ora
+    tutti e tre portati.
+16. ~~Rendicontazione anomala non ricollegata al pagamento~~ — **risolto** (§3quaterdecies,
+    2026-10-30): nuovo `AcquisizioneRicevutaService#riconciliaRendicontazioneAnomala`,
+    nuovi campi `idPagamento`/`anomalie` sull'entity `Rendicontazione`, nuovo
+    `RendicontazioneRepository#findAnomalaNonCollegata`.
+17. ~~Caso ibrido RPTV2_RTV1~~ — **risolto** (§3sexdecies, 2026-10-30; confermato scenario
+    reale, non teorico, dal committente: pagoPA manda davvero chiamate con "primitive
+    incrociate" in produzione): `PaSendRTService#eseguiSendRT` rileva il mismatch di
+    versione sulla RPT trovata, marca `VERSIONE_RPTV2_RTV1` e valida con il nuovo
+    `validaSemanticaIbridaV2RptV1Rt` (porting di `CtReceiptUtils.validaSemantica
+    (PaGetPaymentV2Response, PaSendRTReq)`, senza controllo sul debitore — assente anche
+    nel legacy per questo caso).
+18. ~~Caso ibrido simmetrico RPTV1_RTV2~~ — **risolto** (§3sexdecies, 2026-10-30; confermato
+    reale, stesso scenario di #17): `PaSendRTService#eseguiSendRTV2`, simmetricamente,
+    marca `VERSIONE_RPTV1_RTV2` e valida con `validaSemanticaIbridaV1RptV2Rt`. Nessun ramo
+    SANP_230 (il legacy ne avrebbe un terzo solo su questo lato) — non raggiungibile per
+    costruzione in questo modulo, punto #19.
+19. ~~RPT pre-paForNode (SANP_230) contro ricevuta V1/V2~~ — **risolto, confermato dal
+    committente (2026-10-30): non raggiungibile per costruzione.** Questo modulo non
+    gestirà più transazioni SANP_230 — l'attivazione che le genera non sarà più
+    disponibile, quindi nessuna RPT in questo formato potrà mai esistere per questo
+    porting. Nessun codice da scrivere, nessuna discussione di design necessaria.
+20. ~~Due dettagli minori da verificare~~ — **risolti, entrambi confermati gap reali**
+    (§3septdecies, 2026-10-30): `Pendenza.statoPagamento` non veniva mai impostato da
+    nessuna parte (ne' da `AcquisizioneRicevutaService` ne' da `registraEsitoPendenza`) —
+    corretto impostando `StatoPagamento.PAGATO` nel ramo OK di `acquisisci`. L'anomalo
+    forzato dal legacy quando la pendenza era gia' `ESEGUITO`/`INCASSATO` prima di questa
+    ricevuta era effettivamente raggiungibile (ricevuta duplicata/di retry con tutti i
+    trasferimenti gia' `INCASSATO`, nessun `Pagamento` nuovo, `irregolare` restava falso) —
+    corretto catturando lo stato pregresso della pendenza e forzando `anomalo=true`
+    indipendentemente da `irregolare`, stessa condizione del legacy.

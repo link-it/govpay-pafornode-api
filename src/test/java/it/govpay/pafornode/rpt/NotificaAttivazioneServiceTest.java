@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.govpay.common.entity.ApplicazioneEntity;
@@ -29,8 +30,17 @@ import it.govpay.pendenze.model.TipologiaOpzionePagamento;
 import it.govpay.pendenze.repository.NotificaRepository;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 
+/**
+ * {@code @Transactional} di classe, come {@code AcquisizioneRicevutaServiceTest}: senza
+ * rollback automatico, le {@link Notifica} inserite da un test restano committed sulla
+ * stessa istanza H2 condivisa dal contesto Spring (stessa configurazione di {@code
+ * @SpringBootTest} di altri test, es. {@code RptAttivazioneServiceTest}) e sono visibili
+ * ai test eseguiti dopo — sia nella stessa classe (ordine JUnit non garantito) sia in una
+ * classe diversa che riusa il contesto cache.
+ */
 @SpringBootTest(classes = Application.class)
 @ActiveProfiles("test")
+@Transactional
 class NotificaAttivazioneServiceTest {
 
 	@Autowired
@@ -146,6 +156,56 @@ class NotificaAttivazioneServiceTest {
 		service.accoda(pendenzaFittizia(applicazione.getId()), rpt);
 
 		assertThat(notificaRepository.findAll()).isEmpty();
+	}
+
+	@Test
+	void accodaRicevutaNonAccodaNullaSeLApplicazioneNonHaUnConnettoreConfigurato() {
+		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
+				.codApplicazione("APP-RIC-SENZA-CONNETTORE").autoIuv(true).firmaRicevuta("N").trusted(true)
+				.idUtenza(20L).build());
+		Rpt rpt = rptPersistita(applicazione.getId(), "00000000000000000020");
+
+		service.accodaRicevuta(pendenzaFittizia(applicazione.getId()), rpt);
+
+		assertThat(notificaRepository.findAll()).isEmpty();
+	}
+
+	@Test
+	void accodaRicevutaAncheSeIlConnettoreERestUno() {
+		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
+				.codApplicazione("APP-RIC-REST1").autoIuv(true).firmaRicevuta("N").trusted(true).idUtenza(21L)
+				.codConnettoreIntegrazione("CONN-RIC-REST1").build());
+		connettoreEntityRepository.save(ConnettoreEntity.builder().codConnettore("CONN-RIC-REST1")
+				.codProprieta("VERSIONE").valore("REST_1").build());
+		Rpt rpt = rptPersistita(applicazione.getId(), "00000000000000000021");
+
+		service.accodaRicevuta(pendenzaFittizia(applicazione.getId()), rpt);
+
+		Notifica notifica = notificaRepository.findAll().get(0);
+		assertThat(notifica.getIdApplicazione()).isEqualTo(applicazione.getId());
+		assertThat(notifica.getIdRpt()).isEqualTo(rpt.getId());
+		assertThat(notifica.getTipo()).isEqualTo(TipoNotifica.RICEVUTA);
+	}
+
+	/**
+	 * Differenza chiave con {@link #nonAccodaNullaSeIlConnettoreNonERestUno} (ATTIVAZIONE):
+	 * RICEVUTA si accoda ANCHE su connettore v2 — nessun filtro di versione, vedi Javadoc
+	 * di classe ("la versione V2 delle api client prevede solamente l'invio delle
+	 * notifiche di tipo ricevuta").
+	 */
+	@Test
+	void accodaRicevutaAncheSeIlConnettoreERestDue() {
+		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
+				.codApplicazione("APP-RIC-REST2").autoIuv(true).firmaRicevuta("N").trusted(true).idUtenza(22L)
+				.codConnettoreIntegrazione("CONN-RIC-REST2").build());
+		connettoreEntityRepository.save(ConnettoreEntity.builder().codConnettore("CONN-RIC-REST2")
+				.codProprieta("VERSIONE").valore("REST_2").build());
+		Rpt rpt = rptPersistita(applicazione.getId(), "00000000000000000022");
+
+		service.accodaRicevuta(pendenzaFittizia(applicazione.getId()), rpt);
+
+		Notifica notifica = notificaRepository.findAll().get(0);
+		assertThat(notifica.getTipo()).isEqualTo(TipoNotifica.RICEVUTA);
 	}
 
 	private Pendenza pendenzaFittizia(Long idApplicazione) {

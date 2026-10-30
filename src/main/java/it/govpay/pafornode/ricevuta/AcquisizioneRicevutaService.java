@@ -3,6 +3,7 @@ package it.govpay.pafornode.ricevuta;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,12 +18,17 @@ import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.entity.SoggettoDebitore;
 import it.govpay.pendenze.entity.VocePendenza;
+import it.govpay.pendenze.model.StatoPagamento;
 import it.govpay.pendenze.model.StatoPagamentoRicevuta;
 import it.govpay.pendenze.model.StatoPendenza;
+import it.govpay.pendenze.entity.Rendicontazione;
+import it.govpay.pendenze.model.StatoRendicontazione;
 import it.govpay.pendenze.model.StatoVocePendenza;
 import it.govpay.pendenze.model.TipoPagamento;
 import it.govpay.pendenze.repository.PagamentoRepository;
+import it.govpay.pendenze.repository.RendicontazioneRepository;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
+import it.govpay.pafornode.rpt.NotificaAttivazioneService;
 
 /**
  * Acquisizione di una ricevuta di pagamento (RT) pagoPA su una RPT gia' attivata —
@@ -92,20 +98,25 @@ public class AcquisizioneRicevutaService {
     private final NotificaAppIoRepository notificaAppIoRepository;
     private final TipoVersamentoDominioRepository tipoVersamentoDominioRepository;
     private final ApplicazioneRepository applicazioneRepository;
+    private final RendicontazioneRepository rendicontazioneRepository;
     private final PosizioneDebitoriaService posizioneDebitoriaService;
+    private final NotificaAttivazioneService notificaAttivazioneService;
     private final Clock clock;
 
     public AcquisizioneRicevutaService(PagamentoRepository pagamentoRepository,
             PromemoriaRepository promemoriaRepository, NotificaAppIoRepository notificaAppIoRepository,
             TipoVersamentoDominioRepository tipoVersamentoDominioRepository,
-            ApplicazioneRepository applicazioneRepository, PosizioneDebitoriaService posizioneDebitoriaService,
+            ApplicazioneRepository applicazioneRepository, RendicontazioneRepository rendicontazioneRepository,
+            PosizioneDebitoriaService posizioneDebitoriaService, NotificaAttivazioneService notificaAttivazioneService,
             Clock clock) {
         this.pagamentoRepository = pagamentoRepository;
         this.promemoriaRepository = promemoriaRepository;
         this.notificaAppIoRepository = notificaAppIoRepository;
         this.tipoVersamentoDominioRepository = tipoVersamentoDominioRepository;
         this.applicazioneRepository = applicazioneRepository;
+        this.rendicontazioneRepository = rendicontazioneRepository;
         this.posizioneDebitoriaService = posizioneDebitoriaService;
+        this.notificaAttivazioneService = notificaAttivazioneService;
         this.clock = clock;
     }
 
@@ -118,6 +129,8 @@ public class AcquisizioneRicevutaService {
      * @param rpt      la RPT in attesa di ricevuta, gia' bloccata dal chiamante
      * @param dati     i dati della ricevuta, gia' validata semanticamente dal chiamante
      * @return la RPT aggiornata
+     * @throws IllegalStateException se un {@link Pagamento} con la stessa chiave
+     *         (dominio/iuv/iur/indice) e' gia' collegato a un'altra RPT
      */
     @Transactional
     public Rpt acquisisci(Pendenza pendenza, Rpt rpt, DatiRicevutaPagamento dati) {
@@ -134,10 +147,14 @@ public class AcquisizioneRicevutaService {
 
         if (!dati.eseguito()) {
             // Esito KO: la RPT resta aggiornata, ma nessun pagamento e' stato eseguito —
-            // nessun side-effect sulla pendenza (vedi Javadoc di classe).
+            // nessun side-effect sulla pendenza (vedi Javadoc di classe). La notifica
+            // RICEVUTA viene accodata comunque, anche per KO (stesso comportamento del
+            // legacy — l'EC va informato dell'esito negativo).
+            notificaAttivazioneService.accodaRicevuta(pendenza, rpt);
             return rpt;
         }
 
+        StatoPendenza statoPrecedente = pendenza.getStato();
         List<VocePendenza> voci = pendenza.getVoci();
         List<DatiRicevutaPagamento.DatiTrasferimentoRicevuto> trasferimenti = dati.trasferimenti();
         boolean irregolare = false;
@@ -148,11 +165,23 @@ public class AcquisizioneRicevutaService {
             }
             VocePendenza voce = indice < voci.size() ? voci.get(indice) : null;
 
-            Pagamento pagamento = pagamentoRepository
+            Optional<Pagamento> esistente = pagamentoRepository
                     .findByCodDominioAndIuv(rpt.getCodDominio(), rpt.getIuv()).stream()
                     .filter(p -> p.getIur().equals(dati.receiptId()) && p.getIndiceDati() == trasferimento.idTransfer())
-                    .findFirst().orElseGet(Pagamento::new);
+                    .findFirst();
+            if (esistente.isPresent() && esistente.get().getStato() == StatoPagamentoRicevuta.INCASSATO) {
+                // Gia' incassato: nessuna modifica.
+                continue;
+            }
+            if (esistente.isPresent() && esistente.get().getRpt() != null) {
+                throw new IllegalStateException("Pagamento [dominio:" + rpt.getCodDominio() + ", iuv:" + rpt.getIuv()
+                        + ", iur:" + dati.receiptId() + ", indice:" + trasferimento.idTransfer()
+                        + "] e' gia' collegato alla RPT [id:" + esistente.get().getRpt().getId() + "].");
+            }
 
+            // Se esiste gia' (rendicontato prima della ricevuta, stato PAGATO_SENZA_RPT,
+            // nessuna RPT collegata) viene aggiornato e collegato qui, non ricreato.
+            Pagamento pagamento = esistente.orElseGet(Pagamento::new);
             boolean nuovo = pagamento.getId() == null;
             pagamento.setCodDominio(rpt.getCodDominio());
             pagamento.setIuv(rpt.getIuv());
@@ -163,7 +192,7 @@ public class AcquisizioneRicevutaService {
             pagamento.setDataPagamento(dati.dataPagamento() != null ? dati.dataPagamento() : adesso);
             pagamento.setTipo(determinaTipoPagamento(voce));
             pagamento.setRpt(rpt);
-            if (pagamento.getStato() == null) {
+            if (pagamento.getStato() == null || pagamento.getStato() == StatoPagamentoRicevuta.PAGATO_SENZA_RPT) {
                 pagamento.setStato(StatoPagamentoRicevuta.PAGATO);
             }
             pagamentoRepository.save(pagamento);
@@ -175,18 +204,33 @@ public class AcquisizioneRicevutaService {
                     voce.setStato(StatoVocePendenza.ESEGUITO);
                 }
             }
+            if (nuovo && !irregolare) {
+                riconciliaRendicontazioneAnomala(rpt.getCodDominio(), rpt.getIuv(), dati.receiptId(),
+                        trasferimento.idTransfer(), pagamento, voce);
+            }
         }
 
         pendenza.setDataPagamento(dati.dataPagamento() != null ? dati.dataPagamento() : adesso);
         pendenza.setImportoPagato(dati.importoTotalePagato());
+        pendenza.setStatoPagamento(StatoPagamento.PAGATO);
         if (irregolare) {
-            pendenza.setAnomalo(true);
             pendenza.setDescrizioneStato("Acquisito pagamento duplicato");
+        }
+        // Anomalo anche quando la pendenza era gia' in uno stato diverso da
+        // NON_ESEGUITO/ANNULLATO prima di questa acquisizione, a prescindere da
+        // 'irregolare' (es. tutti i trasferimenti gia' INCASSATI: nessun Pagamento
+        // nuovo, ma la ricevuta e' comunque un duplicato/retry su una pendenza gia'
+        // conclusa).
+        boolean giaEseguita = statoPrecedente != StatoPendenza.NON_ESEGUITO
+                && statoPrecedente != StatoPendenza.ANNULLATO;
+        if (irregolare || giaEseguita) {
+            pendenza.setAnomalo(true);
         }
         posizioneDebitoriaService.registraEsitoPendenza(risolviCodApplicazione(pendenza.getIdApplicazione()),
                 pendenza.getIdPendenza(), StatoPendenza.ESEGUITO);
 
         accodaAvvisatura(pendenza, rpt, adesso);
+        notificaAttivazioneService.accodaRicevuta(pendenza, rpt);
 
         return rpt;
     }
@@ -201,6 +245,27 @@ public class AcquisizioneRicevutaService {
      * lasciato a {@code ENTRATA}, coerente con il fatto che questa libreria non legge
      * l'anagrafica dominio per un semplice pagamento (M4).
      */
+    /**
+     * Richiude una {@link Rendicontazione} ANOMALA arrivata PRIMA della ricevuta
+     * corrispondente (stessi estremi del pagamento appena acquisito, non ancora collegata
+     * a nessun pagamento) — porting di {@code RtUtils
+     * #checkEsistenzaRendicontazioneAnomalaPerIlPagamento}. Nessuna azione se non ne
+     * esiste una: e' il caso normale, non un errore.
+     */
+    private void riconciliaRendicontazioneAnomala(String codDominio, String iuv, String iur, int indiceDati,
+            Pagamento pagamento, VocePendenza voce) {
+        rendicontazioneRepository.findAnomalaNonCollegata(codDominio, iuv, iur, indiceDati, StatoRendicontazione.ANOMALA)
+                .stream().findFirst().ifPresent(rendicontazione -> {
+                    rendicontazione.setStato(StatoRendicontazione.OK);
+                    rendicontazione.setAnomalie(null);
+                    rendicontazione.setIdPagamento(pagamento.getId());
+                    if (rendicontazione.getIdSingoloVersamento() == null && voce != null) {
+                        rendicontazione.setIdSingoloVersamento(voce.getId());
+                    }
+                    rendicontazioneRepository.save(rendicontazione);
+                });
+    }
+
     private TipoPagamento determinaTipoPagamento(VocePendenza voce) {
         if (voce != null && voce.getTipoBollo() != null) {
             return TipoPagamento.MBT;

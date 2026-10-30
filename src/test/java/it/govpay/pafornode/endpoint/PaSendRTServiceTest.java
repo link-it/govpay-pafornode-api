@@ -1,5 +1,6 @@
 package it.govpay.pafornode.endpoint;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -149,6 +150,43 @@ class PaSendRTServiceTest {
 	}
 
 	/**
+	 * Il rifiuto della validazione semantica va persistito PRIMA del fault (vedi Javadoc
+	 * di classe) — qui si verifica solo che {@code RptAttivazioneService
+	 * #rifiutaPerValidazioneSemantica} venga invocato con la RPT corretta, non la
+	 * persistenza reale (serve un contesto Spring, coperta dal test di integrazione SOAP
+	 * in {@code PaForNodeEndpointTest}).
+	 */
+	@Test
+	void persisteIlRifiutoDellaValidazioneSemanticaPrimaDelFault() {
+		mockAutorizzazioneOk();
+		Pendenza pendenza = new Pendenza();
+		pendenza.setId(1L);
+		pendenza.setIuv(IUV);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
+		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
+		Rpt rptInAttesa = new Rpt();
+		rptInAttesa.setXmlRpt(new byte[] { 1 });
+		rptInAttesa.setVersione(RptAttivazioneService.VERSIONE_SANP_240);
+		when(rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(1L, "RPT_ACCETTATA_NODO",
+				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(Optional.of(rptInAttesa));
+		it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA richiestaOriginale =
+				new it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA();
+		richiestaOriginale.setCreditorReferenceId("ALTRO-IUV");
+		it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPA transferList =
+				new it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPA();
+		richiestaOriginale.setTransferList(transferList);
+		when(rptAttivazioneService.deserializzaDati(rptInAttesa)).thenReturn(richiestaOriginale);
+
+		assertThatThrownBy(() -> service.eseguiSendRT(richiesta("receipt-1")))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_SEMANTICA);
+
+		verify(rptAttivazioneService).rifiutaPerValidazioneSemantica(eq(rptInAttesa), any(byte[].class),
+				eq("CreditorReferenceId non corrisponde"));
+	}
+
+	/**
 	 * A differenza di {@link #ricostruisceStandinSeNonEsisteNessunaRptDelModelloPsp}: qui
 	 * esiste GIA' una RPT del modello {@code ATTIVATO_PRESSO_PSP} per questa pendenza (solo
 	 * in un altro stato) — lo standin non si applica (vedi Javadoc di classe di
@@ -263,9 +301,13 @@ class PaSendRTServiceTest {
 		verify(acquisizioneRicevutaService).acquisisci(eq(pendenza), eq(rptStandin), any(DatiRicevutaPagamento.class));
 	}
 
-	/** Come {@link #ricostruisceStandinSeNonEsisteNessunaRptDelModelloPsp}, per {@code paSendRTV2}. */
+	/**
+	 * Come {@link #ricostruisceStandinSeNonEsisteNessunaRptDelModelloPsp}, per {@code
+	 * paSendRTV2} — ma qui la ricerca NON e' filtrata per modello (asimmetria presente
+	 * anche nel legacy, vedi Javadoc di classe): si verificano le query senza filtro.
+	 */
 	@Test
-	void ricostruisceStandinV2SeNonEsisteNessunaRptDelModelloPsp() {
+	void ricostruisceStandinV2SeNonEsisteNessunaRptDiQualunqueModello() {
 		mockAutorizzazioneOk();
 		Pendenza pendenza = new Pendenza();
 		pendenza.setId(1L);
@@ -273,10 +315,8 @@ class PaSendRTServiceTest {
 		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
 		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
 		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
-		when(rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(1L, "RPT_ACCETTATA_NODO",
-				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(Optional.empty());
-		when(rptRepository.existsByIdVersamentoAndModelloPagamento(1L,
-				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(false);
+		when(rptRepository.findByIdVersamentoAndStato(1L, "RPT_ACCETTATA_NODO")).thenReturn(Optional.empty());
+		when(rptRepository.existsByIdVersamento(1L)).thenReturn(false);
 		Rpt rptStandin = new Rpt();
 		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), eq(RptAttivazioneService.VERSIONE_SANP_321_V2),
 				eq("receipt-1"), any())).thenReturn(rptStandin);
@@ -285,6 +325,151 @@ class PaSendRTServiceTest {
 
 		verify(rptAttivazioneService, never()).deserializzaDatiV2(any());
 		verify(acquisizioneRicevutaService).acquisisci(eq(pendenza), eq(rptStandin), any(DatiRicevutaPagamento.class));
+	}
+
+	/**
+	 * Asimmetria col caso V1 ({@link #ricostruisceStandinSeEsisteSoloUnaRptDiUnAltroModello}):
+	 * su {@code paSendRTV2} una RPT di un ALTRO modello BLOCCA lo standin (il legacy, qui,
+	 * non filtra per modello — {@code rptBD.getRpt(codDominio, iuv, null, null)}).
+	 */
+	@Test
+	void rifiutaConRptSconosciutaV2SeEsisteGiaUnaRptDiAltroModello() {
+		mockAutorizzazioneOk();
+		Pendenza pendenza = new Pendenza();
+		pendenza.setId(1L);
+		pendenza.setIuv(IUV);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
+		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
+		when(rptRepository.findByIdVersamentoAndStato(1L, "RPT_ACCETTATA_NODO")).thenReturn(Optional.empty());
+		when(rptRepository.existsByIdVersamento(1L)).thenReturn(true);
+
+		assertThatThrownBy(() -> service.eseguiSendRTV2(richiestaV2("receipt-1")))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RPT_SCONOSCIUTA);
+	}
+
+	/**
+	 * Caso ibrido (punto #17): la RPT in attesa e' stata attivata con {@code
+	 * paGetPaymentV2} ({@code versione=SANP_321_V2}), ma la ricevuta arriva tramite {@code
+	 * paSendRT} (V1) — deserializzazione/validazione devono passare per il ramo V2, non
+	 * quello V1 (vedi Javadoc di classe).
+	 */
+	@Test
+	void eseguiSendRTGestisceIlCasoIbridoRptV2RicevutaV1() {
+		mockAutorizzazioneOk();
+		Pendenza pendenza = new Pendenza();
+		pendenza.setId(1L);
+		pendenza.setIuv(IUV);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
+		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
+		Rpt rptInAttesa = new Rpt();
+		rptInAttesa.setXmlRpt(new byte[] { 1 });
+		rptInAttesa.setVersione(RptAttivazioneService.VERSIONE_SANP_321_V2);
+		when(rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(1L, "RPT_ACCETTATA_NODO",
+				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(Optional.of(rptInAttesa));
+		it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2 richiestaOriginale =
+				new it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2();
+		richiestaOriginale.setCreditorReferenceId(IUV);
+		richiestaOriginale.setTransferList(new it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPAV2());
+		when(rptAttivazioneService.deserializzaDatiV2(rptInAttesa)).thenReturn(richiestaOriginale);
+		PaSendRTReq request = richiesta("receipt-1");
+		request.getReceipt().setPaymentAmount(java.math.BigDecimal.ZERO);
+
+		service.eseguiSendRT(request);
+
+		verify(rptAttivazioneService, never()).deserializzaDati(any());
+		assertThat(rptInAttesa.getVersione()).isEqualTo(RptAttivazioneService.VERSIONE_RPTV2_RTV1);
+		verify(acquisizioneRicevutaService).acquisisci(eq(pendenza), eq(rptInAttesa), any(DatiRicevutaPagamento.class));
+	}
+
+	/** Come {@link #eseguiSendRTGestisceIlCasoIbridoRptV2RicevutaV1}, ma con validazione fallita. */
+	@Test
+	void eseguiSendRTPersisteIlRifiutoNelCasoIbridoRptV2RicevutaV1() {
+		mockAutorizzazioneOk();
+		Pendenza pendenza = new Pendenza();
+		pendenza.setId(1L);
+		pendenza.setIuv(IUV);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
+		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
+		Rpt rptInAttesa = new Rpt();
+		rptInAttesa.setXmlRpt(new byte[] { 1 });
+		rptInAttesa.setVersione(RptAttivazioneService.VERSIONE_SANP_321_V2);
+		when(rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(1L, "RPT_ACCETTATA_NODO",
+				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(Optional.of(rptInAttesa));
+		it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2 richiestaOriginale =
+				new it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2();
+		richiestaOriginale.setCreditorReferenceId("ALTRO-IUV");
+		richiestaOriginale.setTransferList(new it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPAV2());
+		when(rptAttivazioneService.deserializzaDatiV2(rptInAttesa)).thenReturn(richiestaOriginale);
+
+		assertThatThrownBy(() -> service.eseguiSendRT(richiesta("receipt-1")))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_SEMANTICA);
+
+		assertThat(rptInAttesa.getVersione()).isEqualTo(RptAttivazioneService.VERSIONE_RPTV2_RTV1);
+		verify(rptAttivazioneService).rifiutaPerValidazioneSemantica(eq(rptInAttesa), any(byte[].class),
+				eq("CreditorReferenceId non corrisponde"));
+	}
+
+	/** Caso simmetrico (punto #18): RPT attivata V1, ricevuta arrivata tramite {@code paSendRTV2}. */
+	@Test
+	void eseguiSendRTV2GestisceIlCasoIbridoRptV1RicevutaV2() {
+		mockAutorizzazioneOk();
+		Pendenza pendenza = new Pendenza();
+		pendenza.setId(1L);
+		pendenza.setIuv(IUV);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
+		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
+		Rpt rptInAttesa = new Rpt();
+		rptInAttesa.setXmlRpt(new byte[] { 1 });
+		rptInAttesa.setVersione(RptAttivazioneService.VERSIONE_SANP_240);
+		when(rptRepository.findByIdVersamentoAndStato(1L, "RPT_ACCETTATA_NODO")).thenReturn(Optional.of(rptInAttesa));
+		it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA richiestaOriginale =
+				new it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA();
+		richiestaOriginale.setCreditorReferenceId(IUV);
+		richiestaOriginale.setTransferList(new it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPA());
+		when(rptAttivazioneService.deserializzaDati(rptInAttesa)).thenReturn(richiestaOriginale);
+		PaSendRTV2Request request = richiestaV2("receipt-1");
+		request.getReceipt().setPaymentAmount(java.math.BigDecimal.ZERO);
+
+		service.eseguiSendRTV2(request);
+
+		verify(rptAttivazioneService, never()).deserializzaDatiV2(any());
+		assertThat(rptInAttesa.getVersione()).isEqualTo(RptAttivazioneService.VERSIONE_RPTV1_RTV2);
+		verify(acquisizioneRicevutaService).acquisisci(eq(pendenza), eq(rptInAttesa), any(DatiRicevutaPagamento.class));
+	}
+
+	/** Come {@link #eseguiSendRTV2GestisceIlCasoIbridoRptV1RicevutaV2}, ma con validazione fallita. */
+	@Test
+	void eseguiSendRTV2PersisteIlRifiutoNelCasoIbridoRptV1RicevutaV2() {
+		mockAutorizzazioneOk();
+		Pendenza pendenza = new Pendenza();
+		pendenza.setId(1L);
+		pendenza.setIuv(IUV);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
+		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
+		Rpt rptInAttesa = new Rpt();
+		rptInAttesa.setXmlRpt(new byte[] { 1 });
+		rptInAttesa.setVersione(RptAttivazioneService.VERSIONE_SANP_240);
+		when(rptRepository.findByIdVersamentoAndStato(1L, "RPT_ACCETTATA_NODO")).thenReturn(Optional.of(rptInAttesa));
+		it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA richiestaOriginale =
+				new it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA();
+		richiestaOriginale.setCreditorReferenceId("ALTRO-IUV");
+		richiestaOriginale.setTransferList(new it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPA());
+		when(rptAttivazioneService.deserializzaDati(rptInAttesa)).thenReturn(richiestaOriginale);
+
+		assertThatThrownBy(() -> service.eseguiSendRTV2(richiestaV2("receipt-1")))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_SEMANTICA);
+
+		assertThat(rptInAttesa.getVersione()).isEqualTo(RptAttivazioneService.VERSIONE_RPTV1_RTV2);
+		verify(rptAttivazioneService).rifiutaPerValidazioneSemantica(eq(rptInAttesa), any(byte[].class),
+				eq("CreditorReferenceId non corrisponde"));
 	}
 
 	private PaSendRTV2Request richiestaV2(String receiptId) {

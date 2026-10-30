@@ -26,9 +26,9 @@ Operazioni esposte (contratto in [src/main/resources/xsd/paForNode.wsdl](src/mai
 | `paSendRT` | `paSendRTReq` | Riceve la ricevuta di pagamento e registra l'esito della pendenza |
 | `paSendRTV2` | `paSendRTV2Request` | Come `paSendRT`, per le ricevute della versione 2 |
 
-L'operazione `paDemandPaymentNotice`, presente nel WSDL, non è implementata: la richiesta riceve HTTP 404.
+L'operazione `paDemandPaymentNotice`, presente nel WSDL di pagoPA, **non è supportata**: la richiesta riceve HTTP 404.
 
-Tutte le operazioni rispondono su un unico endpoint, `POST /ws`: Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblicato in `GET /ws/paForNode.wsdl` (con autenticazione); l'indirizzo che riporta, `<host>/service/pa/paForNode`, non è quello del servizio, che va configurato sul Nodo come `<host>/ws`. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA.
+Tutte le operazioni rispondono su un unico endpoint, `POST /ws`: Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblicato in `GET /ws/paForNode.wsdl` (con autenticazione), con l'indirizzo del servizio (`soap:address`) riscritto su host e porta della richiesta: `<host>/ws`. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA.
 
 ### Autenticazione
 
@@ -40,7 +40,7 @@ L'autenticazione usa [govpay-common-auth](https://github.com/link-it/govpay-comm
 | SSL_HEADER | `govpay.auth.ssl-header.enabled=true` | Il TLS è terminato da un reverse proxy o API gateway, che inoltra il certificato client in un header |
 | HEADER | `govpay.auth.header.enabled=true` | Il principal è già autenticato a monte e inoltrato in un header (usato dai test) |
 
-Nessun metodo è abilitato di default: finché non se ne abilita uno, ogni richiesta su `/ws/**` è rifiutata. Il principal ricavato (dal subject del certificato o dall'header) deve corrispondere al campo `principal` di un intermediario abilitato nella tabella `intermediari`; ogni operazione verifica poi che l'`idBrokerPA` della richiesta sia proprio quell'intermediario. Solo `GET /actuator/health` e `GET /actuator/prometheus` restano accessibili senza autenticazione.
+Nessun metodo è abilitato di default: finché non se ne abilita uno, ogni richiesta su `/ws/**` è rifiutata. Il principal ricavato (dal subject del certificato o dall'header) deve corrispondere al campo `principal` di un intermediario abilitato nella tabella `intermediari`; ogni operazione verifica poi che l'`idBrokerPA` della richiesta sia proprio quell'intermediario. Solo `GET` su `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness` e `/actuator/prometheus` restano accessibili senza autenticazione.
 
 ## Integrazione con GovPay
 
@@ -70,10 +70,10 @@ mvn clean install -P jar     # fat jar, per esecuzione standalone e container (p
 mvn clean install -P war     # war, per il deploy su application server
 ```
 
-Il profilo sceglie il packaging; il risultato è in `target/govpay-pafornode-api.jar` o `target/govpay-pafornode-api.war`. La build esegue i test e l'analisi OWASP Dependency-Check delle dipendenze. L'analisi è dichiarata due volte, dal progetto (proprietà `owasp`) e da govpay-bom (proprietà `owasp.phase`): per escluderla, per esempio in sviluppo, vanno disattivate entrambe:
+Il profilo sceglie il packaging; il risultato è in `target/govpay-pafornode-api.jar` o `target/govpay-pafornode-api.war`. La build esegue i test e l'analisi OWASP Dependency-Check delle dipendenze, configurata in govpay-bom; per escluderla, per esempio in sviluppo:
 
 ```bash
-mvn clean install -P jar -Dowasp=none -Dowasp.phase=none
+mvn clean install -P jar -Dowasp.phase=none
 ```
 
 ## Configurazione
@@ -102,6 +102,8 @@ Per terminare il TLS nell'applicazione (metodo SSL) si usano le proprietà `serv
 | `spring.jpa.database-platform` | `JPA_DIALECT` | `org.hibernate.dialect.PostgreSQLDialect` | Dialetto Hibernate (es. `org.hibernate.dialect.OracleDialect`, `MySQLDialect`, `SQLServerDialect`, `H2Dialect`) |
 | `spring.jpa.hibernate.ddl-auto` | `HIBERNATE_DDL_AUTO` | `validate` | Gestione dello schema: lasciare `validate` o `none`, lo schema è di GovPay |
 | `spring.jpa.open-in-view` | - | `false` | Sessione JPA limitata al servizio, non estesa alla vista |
+| `spring.datasource.hikari.minimum-idle` | - | `10` (`2` nel container, `GOVPAY_PAFORNODE_MIN_POOL`) | Connessioni minime inattive del pool |
+| `spring.datasource.hikari.maximum-pool-size` | - | `10` (`5` nel container, `GOVPAY_PAFORNODE_MAX_POOL`) | Connessioni massime del pool |
 | `govpay.pendenze.fuso-orario` | - | `Europe/Rome` | Fuso orario con cui govpay-common-pendenze interpreta le date del database (colonne `TIMESTAMP` senza fuso) |
 
 I driver JDBC non sono inclusi nel jar: vedi [Esecuzione](#esecuzione).
@@ -138,6 +140,10 @@ Proprietà di [govpay-common-auth](https://github.com/link-it/govpay-common-auth
 | `govpay.auth.public-chain.permit-all-paths[0].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
 | `govpay.auth.public-chain.permit-all-paths[1].path` | `/actuator/prometheus` | Path accessibile senza autenticazione |
 | `govpay.auth.public-chain.permit-all-paths[1].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
+| `govpay.auth.public-chain.permit-all-paths[2].path` | `/actuator/health/liveness` | Path accessibile senza autenticazione (probe di liveness) |
+| `govpay.auth.public-chain.permit-all-paths[2].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
+| `govpay.auth.public-chain.permit-all-paths[3].path` | `/actuator/health/readiness` | Path accessibile senza autenticazione (probe di readiness) |
+| `govpay.auth.public-chain.permit-all-paths[3].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
 
 Header di sicurezza (`govpay.auth.headers.*`), firewall (`govpay.auth.firewall.*`) e CORS (`govpay.auth.cors.*`) sono descritti nel README di [govpay-common-auth](https://github.com/link-it/govpay-common-auth#configurazione). Gli altri metodi della libreria (BASIC, FORM, LDAP, API_KEY, OAUTH2, SPID, SESSION) non sono previsti per questo servizio.
 
@@ -178,7 +184,7 @@ Le altre proprietà della tracciatura (`govpay.logging.tracciatura.*`) sono desc
 | `management.server.port` | `MANAGEMENT_SERVER_PORT` | porta del servizio | Porta dedicata agli endpoint actuator |
 | `management.endpoints.web.base-path` | - | `/actuator` | Base path degli endpoint actuator |
 | `management.endpoints.web.exposure.include` | `MANAGEMENT_ENDPOINTS` | `health,prometheus` | Endpoint actuator esposti |
-| `management.endpoint.health.probes.enabled` | - | `true` | Espone `/actuator/health/liveness` e `/actuator/health/readiness` (non pubblici, vedi [Monitoraggio](#monitoraggio)) |
+| `management.endpoint.health.probes.enabled` | - | `true` | Espone `/actuator/health/liveness` e `/actuator/health/readiness` |
 | `management.health.livenessState.enabled` | - | `true` | Stato di liveness nell'health |
 | `management.health.readinessState.enabled` | - | `true` | Stato di readiness nell'health |
 | `management.metrics.distribution.percentiles-histogram.http.server.requests` | - | `true` | Istogrammi delle latenze, per aggregare i percentili tra più istanze |
@@ -229,23 +235,37 @@ Il war non contiene i driver JDBC e usa il datasource dell'application server, i
 
 L'immagine è pubblicata su Docker Hub come [linkitaly/govpay-pafornode-api](https://hub.docker.com/r/linkitaly/govpay-pafornode-api) (release) e `linkitaly/govpay-pafornode-api-dev` (sviluppo, a ogni push su `main` con versione SNAPSHOT). Il servizio risponde sulla porta `10004`.
 
-L'entrypoint dell'immagine configura solo porta e memoria della JVM: database, driver JDBC e autenticazione si passano con le variabili dell'applicazione (vedi [Configurazione](#configurazione)). I driver JDBC non sono nell'immagine: si montano in una directory indicata con `LOADER_PATH`.
+I driver JDBC non sono nell'immagine: si montano in `/opt/jdbc-drivers` (directory indicata da `GOVPAY_DS_JDBC_LIBS`), da cui l'entrypoint li carica con `loader.path`. L'entrypoint costruisce URL JDBC, driver e dialetto dalle variabili `GOVPAY_DB_*`; il metodo di autenticazione si abilita con la variabile della proprietà (es. `GOVPAY_AUTH_SSL_HEADER_ENABLED=true`, vedi [Configurazione](#configurazione)).
 
 ```bash
 docker run -d --name govpay-pafornode-api -p 10004:10004 \
   -v ./jdbc-drivers:/opt/jdbc-drivers \
-  -e LOADER_PATH=/opt/jdbc-drivers \
-  -e DATASOURCE_URL=jdbc:postgresql://postgres:5432/govpay \
-  -e DATASOURCE_USERNAME=govpay \
-  -e DATASOURCE_PASSWORD=<password> \
+  -e GOVPAY_DB_TYPE=postgresql \
+  -e GOVPAY_DB_SERVER=postgres:5432 \
+  -e GOVPAY_DB_NAME=govpay \
+  -e GOVPAY_DB_USER=govpay \
+  -e GOVPAY_DB_PASSWORD=<password> \
   -e GOVPAY_AUTH_SSL_HEADER_ENABLED=true \
   linkitaly/govpay-pafornode-api
 ```
+
+In alternativa alle `GOVPAY_DB_*` si possono passare direttamente `DATASOURCE_URL`, `DATASOURCE_USERNAME`, `DATASOURCE_PASSWORD`, `DATASOURCE_DRIVER` e `JPA_DIALECT`.
 
 Variabili d'ambiente dell'immagine, oltre a quelle dell'applicazione:
 
 | Variabile | Obbligatoria | Default | Descrizione |
 |-----------|--------------|---------|-------------|
+| `GOVPAY_DB_TYPE` | sì (se manca `DATASOURCE_URL`) | - | Tipo di database: `postgresql`, `mysql`, `mariadb`, `oracle`, `sqlserver` |
+| `GOVPAY_DB_SERVER` | sì (se manca `DATASOURCE_URL`) | - | Server del database, `host` o `host:porta` (porta di default del database se omessa) |
+| `GOVPAY_DB_NAME` | sì (se manca `DATASOURCE_URL`) | - | Nome del database (per Oracle, service name o SID) |
+| `GOVPAY_DB_USER` | sì (se manca `DATASOURCE_URL`) | - | Utente del database |
+| `GOVPAY_DB_PASSWORD` | sì (se manca `DATASOURCE_URL`) | - | Password del database |
+| `GOVPAY_DS_CONN_PARAM` | no | - | Parametri aggiunti all'URL JDBC (es. `zeroDateTimeBehavior=convertToNull` per MySQL) |
+| `GOVPAY_DS_JDBC_LIBS` | no | `/opt/jdbc-drivers` | Directory dei driver JDBC |
+| `GOVPAY_ORACLE_JDBC_URL_TYPE` | no | `servicename` | Formato dell'URL Oracle: `servicename` o `sid` |
+| `ORACLE_TNS_ADMIN` | no | - | Directory dei file TNS di Oracle |
+| `GOVPAY_PAFORNODE_MIN_POOL` | no | `2` | Connessioni minime inattive del pool |
+| `GOVPAY_PAFORNODE_MAX_POOL` | no | `5` | Connessioni massime del pool |
 | `SERVER_PORT` | no | `10004` | Porta HTTP del servizio |
 | `GOVPAY_PAFORNODE_JVM_MAX_RAM_PERCENTAGE` | no | `80` | `-XX:MaxRAMPercentage` della JVM |
 | `GOVPAY_PAFORNODE_JVM_INITIAL_RAM_PERCENTAGE` | no | - | `-XX:InitialRAMPercentage` della JVM |
@@ -253,7 +273,6 @@ Variabili d'ambiente dell'immagine, oltre a quelle dell'applicazione:
 | `GOVPAY_PAFORNODE_JVM_MAX_METASPACE_SIZE` | no | - | `-XX:MaxMetaspaceSize` della JVM |
 | `GOVPAY_PAFORNODE_JVM_MAX_DIRECT_MEMORY_SIZE` | no | - | `-XX:MaxDirectMemorySize` della JVM |
 | `JAVA_OPTS` | no | - | Opzioni aggiuntive della JVM |
-| `LOADER_PATH` | sì | - | Directory dei driver JDBC montata nel container |
 | `LOGGING_FILE_NAME` | no | `/var/log/govpay-pafornode/govpay-pafornode-api.log` | File di log |
 | `TZ` | no | `Europe/Rome` | Fuso orario del container |
 
@@ -268,7 +287,7 @@ curl http://localhost:10004/actuator/health       # stato, usato anche dalle pro
 curl http://localhost:10004/actuator/prometheus   # metriche in formato Prometheus
 ```
 
-Sono disponibili anche `/actuator/health/liveness` e `/actuator/health/readiness`, che però non sono tra i path pubblici e rispondono `401` senza autenticazione: per usarli nelle probe aggiungerli a `govpay.auth.public-chain.permit-all-paths`. Per spostare gli endpoint su una porta dedicata impostare `management.server.port` (nel container `MANAGEMENT_SERVER_PORT`). L'endpoint `loggers`, che permette di cambiare i livelli di log a caldo, non è esposto di default: abilitarlo solo insieme a una porta dedicata e non raggiungibile dall'esterno, per esempio `MANAGEMENT_SERVER_PORT=9090` e `MANAGEMENT_ENDPOINTS=health,prometheus,loggers`.
+Per le probe dei container sono disponibili anche `/actuator/health/liveness` e `/actuator/health/readiness`, anch'essi senza autenticazione. Per spostare gli endpoint su una porta dedicata impostare `management.server.port` (nel container `MANAGEMENT_SERVER_PORT`). L'endpoint `loggers`, che permette di cambiare i livelli di log a caldo, non è esposto di default: abilitarlo solo insieme a una porta dedicata e non raggiungibile dall'esterno, per esempio `MANAGEMENT_SERVER_PORT=9090` e `MANAGEMENT_ENDPOINTS=health,prometheus,loggers`.
 
 ## Pipeline CI
 

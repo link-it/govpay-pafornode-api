@@ -110,8 +110,9 @@ jobs:
         NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         OSS_INDEX_USER: ${{ vars.OSS_INDEX_USER }}
         OSS_INDEX_PASSWORD: ${{ secrets.OSS_INDEX_PASSWORD }}
-        # Se la cache è esatta (stessa giornata) skippa l'update NVD
-        NOUPDATE_FLAG: ${{ steps.owasp-cache.outputs.cache-hit == 'true' && '-DautoUpdate=false' || '' }}
+        # Se la cache è esatta (stessa giornata) skippa l'update NVD. La proprieta' e' quella
+        # letta dalla configurazione del plugin in govpay-bom (-DautoUpdate non ha effetto).
+        NOUPDATE_FLAG: ${{ steps.owasp-cache.outputs.cache-hit == 'true' && '-Dowasp.autoUpdate=false' || '' }}
       run: mvn install -P jar -Dspring.profiles.active=test -Duser.timezone=Europe/Rome -DnvdApiKey=$NVD_API_KEY -DossIndexUsername=$OSS_INDEX_USER -DossIndexPassword=$OSS_INDEX_PASSWORD -DdataDirectory=.dependency-check/data -Dowasp.format=ALL -Dowasp.output.dir=./dependency-check-report $NOUPDATE_FLAG
 
     - name: Show JaCoCo report location and Zip JaCoCo HTML report

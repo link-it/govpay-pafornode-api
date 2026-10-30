@@ -324,6 +324,15 @@ class PaForNodeEndpointTest {
 	}
 
 	@Test
+	void probeLivenessEReadinessAccessibiliSenzaAutenticazione() {
+		for (String probe : new String[] { "/actuator/health/liveness", "/actuator/health/readiness" }) {
+			ResponseEntity<String> risposta = restTemplate.getForEntity("http://localhost:" + port + probe,
+					String.class);
+			assertThat(risposta.getStatusCode()).as(probe).isEqualTo(HttpStatus.OK);
+		}
+	}
+
+	@Test
 	void wsdlEspostoSullaPathAttesa() {
 		HttpHeaders headers = new HttpHeaders();
 		headers.add(HEADER_PRINCIPAL, PRINCIPAL_INTERMEDIARIO);
@@ -332,6 +341,8 @@ class PaForNodeEndpointTest {
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("paVerifyPaymentNotice");
+		// L'indirizzo del servizio nel WSDL e' quello su cui risponde davvero (/ws)
+		assertThat(risposta.getBody()).contains("soap:address location=\"http://localhost:" + port + "/ws\"");
 	}
 
 	@Test

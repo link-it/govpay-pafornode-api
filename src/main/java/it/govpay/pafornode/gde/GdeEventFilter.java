@@ -47,6 +47,15 @@ import jakarta.servlet.http.HttpServletResponse;
  * {@link GdeCapturingResponseWrapper}). Gli header sensibili (Authorization, Cookie, ecc.)
  * sono oscurati da {@link GdeUtils#maskSensitiveHeaderValue}.
  * <p>
+ * L'esito dell'evento NON si classifica dal solo stato HTTP: per il contratto paForNode un
+ * fault applicativo (incluso {@code PAA_SYSTEM_ERROR}) è sempre restituito con HTTP 200
+ * (risposta normale con {@code outcome=KO} nel body, mai un SOAP Fault né uno status di
+ * errore — {@code PaForNodeEndpoint} cattura sempre le eccezioni internamente). {@link
+ * GdeFaultContext#segnalaFault}, chiamato da {@code PaForNodeEndpoint} quando costruisce una
+ * risposta di fault, ha quindi precedenza sullo stato HTTP — quest'ultimo resta comunque il
+ * valore REALE riportato in {@code statusCodeRisposta} (sempre 200 per queste 5 operazioni),
+ * i due concetti restano separati.
+ * <p>
  * L'ordine deve essere numericamente MAGGIORE dell'ordine di {@code TransactionIdFilter}
  * (default {@code HIGHEST_PRECEDENCE + 100}), non minore: un filtro con ordine più basso
  * avvolge quelli con ordine più alto dall'esterno, quindi il suo blocco {@code finally} (dove
@@ -112,7 +121,8 @@ public class GdeEventFilter extends OncePerRequestFilter {
     private void buildAndSendEvent(ContentCachingRequestWrapper request, GdeCapturingResponseWrapper response,
                                    OffsetDateTime start, long durataMs, Throwable error) {
         int status = status(response, error);
-        EsitoEvento esito = esitoDaStatus(status);
+        String faultCode = (String) request.getAttribute(GdeFaultContext.FAULT_CODE_ATTRIBUTE);
+        EsitoEvento esito = faultCode != null ? EsitoEvento.KO : esitoDaStatus(status);
 
         GdeEventInfo eventInfo = GdeEventInfo.builder()
                 .componente(ComponenteEvento.API_PAGOPA)
@@ -122,7 +132,7 @@ public class GdeEventFilter extends OncePerRequestFilter {
                 .dataEvento(start)
                 .durataEvento(durataMs)
                 .esito(esito)
-                .descrizioneEsito(error != null ? error.getMessage() : null)
+                .descrizioneEsito(descrizioneEsito(request, error, faultCode))
                 .principal(currentPrincipal(request))
                 .urlRichiesta(fullUrl(request))
                 .metodoHttp(request.getMethod())
@@ -138,9 +148,29 @@ public class GdeEventFilter extends OncePerRequestFilter {
     }
 
     /**
+     * Quando l'esito applicativo è un fault (propagato da {@link GdeFaultContext}), la
+     * descrizione riporta codice e descrizione del fault pagoPA — altrimenti, se la chain ha
+     * propagato un'eccezione, il suo messaggio; nessuno dei due casi, nessuna descrizione.
+     */
+    private static String descrizioneEsito(HttpServletRequest request, Throwable error, String faultCode) {
+        if (error != null) {
+            return error.getMessage();
+        }
+        if (faultCode != null) {
+            String descrizioneFault = (String) request.getAttribute(GdeFaultContext.FAULT_DESCRIZIONE_ATTRIBUTE);
+            return descrizioneFault != null ? faultCode + ": " + descrizioneFault : faultCode;
+        }
+        return null;
+    }
+
+    /**
      * Se la chain ha propagato un'eccezione senza che nessuno abbia impostato uno status di
      * errore sulla response (es. eccezione non gestita da nessun exception resolver), lo
-     * status resterebbe 200 di default e l'evento uscirebbe erroneamente come OK.
+     * status resterebbe 200 di default e l'evento uscirebbe erroneamente come OK. Fallback
+     * per le richieste che NON passano da {@code PaForNodeEndpoint} (es. WSDL, autenticazione
+     * fallita prima del dispatch): per le 5 operazioni paForNode l'esito applicativo
+     * (sopra, da {@link GdeFaultContext}) ha sempre precedenza, perché per questo contratto
+     * un fault è sempre HTTP 200.
      */
     private static EsitoEvento esitoDaStatus(int status) {
         if (status < 400) {

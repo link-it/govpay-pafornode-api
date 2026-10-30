@@ -16,6 +16,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,6 +61,7 @@ import it.govpay.pendenze.model.TipologiaOpzionePagamento;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 import it.govpay.common.utils.IuvUtils.IdentificativiPagamento;
 import it.govpay.common.gde.GdeEventInfo;
+import it.govpay.gde.client.beans.EsitoEvento;
 import it.govpay.pafornode.gde.PaForNodeGdeService;
 
 /**
@@ -371,6 +373,65 @@ class PaForNodeEndpointTest {
 			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
 			return true;
 		}));
+	}
+
+	/**
+	 * Un fault applicativo "funzionale" (pendenza sconosciuta, non un errore interno) arriva
+	 * comunque con HTTP 200 — verifica che l'evento GDE lo classifichi come KO (non OK, come
+	 * accadrebbe classificando dal solo stato HTTP) e riporti codice/descrizione del fault,
+	 * con lo stato HTTP reale comunque riportato a parte (200, non alterato).
+	 */
+	@Test
+	void eventoGdeClassificaComeKoUnFaultFunzionaleAncheConHttp200() {
+		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999999L);
+
+		ResponseEntity<String> risposta = invia(envelope(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
+				identificativiNonUsati.numeroAvviso()));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+		Mockito.verify(paForNodeGdeService).inviaEventoAsync(Mockito.argThat(evento -> {
+			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
+			assertThat(evento.getEsito()).isEqualTo(EsitoEvento.KO);
+			assertThat(evento.getDescrizioneEsito()).contains("PAA_PAGAMENTO_SCONOSCIUTO");
+			return true;
+		}));
+	}
+
+	/**
+	 * Come sopra, per {@code PAA_SYSTEM_ERROR} (percorso del catch generico su un errore
+	 * interno inatteso, non di una {@code NdpException} esplicita come il caso funzionale
+	 * sopra) — stesso scenario reale di {@code
+	 * paGetPaymentSuCollisioneDiChiaveRptRestituisceFaultInveceDiPropagareLerrore}: due
+	 * attivazioni con lo stesso {@code ccp} (clock fisso) collidono sulla chiave fisica della
+	 * RPT al commit della seconda.
+	 *
+	 * <p>Niente {@code clearInvocations} tra le due chiamate: il body della risposta HTTP può
+	 * arrivare al client (quindi a {@code invia()}) PRIMA che il {@code finally} di {@code
+	 * GdeEventFilter} finisca di registrare l'evento sul mock — un {@code clearInvocations}
+	 * tra le due {@code invia()} è quindi una corsa, non una sincronizzazione reale.
+	 * Si raccolgono invece TUTTI gli eventi delle due chiamate e si verifica che almeno uno
+	 * sia il KO con {@code PAA_SYSTEM_ERROR} atteso.</p>
+	 */
+	@Test
+	void eventoGdeClassificaComeKoUnPaaSystemErrorAncheConHttp200() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-gde-system-error", 16.00);
+		String richiesta = envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
+				identificativi.numeroAvviso());
+
+		invia(richiesta);
+		ResponseEntity<String> seconda = invia(richiesta);
+
+		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(seconda.getBody()).contains("<faultCode>PAA_SYSTEM_ERROR</faultCode>");
+
+		ArgumentCaptor<GdeEventInfo> captor = ArgumentCaptor.forClass(GdeEventInfo.class);
+		Mockito.verify(paForNodeGdeService, Mockito.atLeastOnce()).inviaEventoAsync(captor.capture());
+		assertThat(captor.getAllValues()).anySatisfy(evento -> {
+			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
+			assertThat(evento.getEsito()).isEqualTo(EsitoEvento.KO);
+			assertThat(evento.getDescrizioneEsito()).contains("PAA_SYSTEM_ERROR");
+		});
 	}
 
 	@Test

@@ -23,6 +23,7 @@ import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtFaultBean;
 import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
+import it.govpay.pafornode.gde.GdeFaultContext;
 import it.govpay.pafornode.rpt.PaGetPaymentActivationService;
 import it.govpay.pafornode.rpt.PaGetPaymentV2ActivationService;
 
@@ -107,6 +108,7 @@ public class PaForNodeEndpoint {
 	}
 
 	private static PaGetPaymentRes buildFaultGetPayment(NdpException e) {
+		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
 		PaGetPaymentRes response = new PaGetPaymentRes();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
@@ -142,6 +144,7 @@ public class PaForNodeEndpoint {
 	}
 
 	private static PaGetPaymentV2Response buildFaultGetPaymentV2(NdpException e) {
+		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
 		PaGetPaymentV2Response response = new PaGetPaymentV2Response();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
@@ -175,6 +178,7 @@ public class PaForNodeEndpoint {
 	}
 
 	private static PaSendRTRes buildFaultSendRT(NdpException e) {
+		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
 		PaSendRTRes response = new PaSendRTRes();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
@@ -203,6 +207,7 @@ public class PaForNodeEndpoint {
 	}
 
 	private static PaSendRTV2Response buildFaultSendRTV2(NdpException e) {
+		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
 		PaSendRTV2Response response = new PaSendRTV2Response();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
@@ -215,6 +220,7 @@ public class PaForNodeEndpoint {
 	}
 
 	private static PaVerifyPaymentNoticeRes buildFault(NdpException e) {
+		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
 		PaVerifyPaymentNoticeRes response = new PaVerifyPaymentNoticeRes();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();

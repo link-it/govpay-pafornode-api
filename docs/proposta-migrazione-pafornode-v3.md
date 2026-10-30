@@ -63,8 +63,9 @@ ricerca/lock RPT, deserializzazione del payload originale, validazione semantica
 Validazione semantica completa, inclusi i casi ibridi RPTV2_RTV1/RPTV1_RTV2, **completata**
 (§3sexdecies, 2026-10-30). Punto #20 (`statoPagamento` e anomalo forzato su esito gia'
 definitivo) risolto (§3septdecies, 2026-10-30). Giornale degli Eventi (GDE) sulle richieste in
-ingresso portato (§3octodecies, 2026-10-30). 221/221 test verdi in govpay-common-pendenze,
-167/167 in govpay-pafornode-api.
+ingresso portato (§3octodecies, 2026-10-30), incluso il fix dell'esito classificato solo da
+HTTP status (sempre 200 per i fault di questo contratto). 221/221 test verdi in
+govpay-common-pendenze, 171/171 in govpay-pafornode-api.
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -1127,6 +1128,39 @@ govpay-pafornode-api.
 `GovpayMetricsAutoConfiguration`) restano disattivate — manca `govpay.metrics.enabled=true` in
 `application.properties`. Solo lo scaffolding Actuator/Prometheus di base (gia' presente) e'
 attivo. Il committente ha deciso di non introdurle in questo progetto per ora.
+
+**Bug di revisione corretto (2026-10-30): l'esito si classificava solo dallo stato HTTP.**
+Per il contratto paForNode un fault applicativo (incluso `PAA_SYSTEM_ERROR`) e' SEMPRE
+restituito con HTTP 200 — `PaForNodeEndpoint` cattura sempre `NdpException`/`RuntimeException`
+internamente e costruisce una risposta normale con `outcome=KO`/`fault` nel body, mai un SOAP
+Fault ne' uno status di errore. `GdeEventFilter#esitoDaStatus`, basato solo su
+`response.getStatus()`, classificava quindi OGNI chiamata come OK — anche un fault, incluso
+`PAA_SYSTEM_ERROR` — perche' lo status resta sempre 200. Le policy GDE `SOLO_ERRORE` basate
+sull'esito avrebbero quindi escluso silenziosamente questi eventi, e codice/descrizione del
+fault non arrivavano mai nell'evento.
+
+**Fix**: nuovo `GdeFaultContext.segnalaFault(faultCode, descrizione)`, chiamato da ciascuno
+dei 5 metodi `buildFault*` di `PaForNodeEndpoint` (stesso punto unico per `NdpException`
+esplicite e per il catch generico `RuntimeException`→`PAA_SYSTEM_ERROR`), propaga l'esito
+applicativo tramite attributi di richiesta — stesso meccanismo di
+`OperationIdEndpointInterceptor` (estratto in un `SoapTransportUtils` condiviso). `GdeEventFilter`
+da' precedenza all'attributo quando presente (`esito=KO`, `descrizioneEsito` con codice e
+descrizione del fault); lo stato HTTP reale resta comunque riportato per quello che e'
+(`statusCodeRisposta`, sempre 200 per queste 5 operazioni) — i due concetti restano separati,
+come richiesto in revisione.
+
+**Test**: 2 nuovi test unitari in `GdeEventFilterTest` (fault funzionale e `PAA_SYSTEM_ERROR`,
+entrambi con HTTP 200 simulato) + 2 nuovi test di integrazione SOAP reale in
+`PaForNodeEndpointTest` (stesso scenario reale di pendenza sconosciuta/collisione RPT, con
+verifica dell'evento GDE). **Race condition trovata e corretta nel test, non
+nell'implementazione**: il body della risposta HTTP può arrivare al client PRIMA che il
+`finally` di `GdeEventFilter` finisca di registrare l'evento sul mock — un
+`Mockito.clearInvocations` tra due chiamate sequenziali e' quindi una corsa, non una
+sincronizzazione reale (osservato empiricamente: a volte 0 invocazioni visibili subito dopo
+la prima chiamata, poi 2 insieme al controllo finale). Corretto raccogliendo con un
+`ArgumentCaptor` tutti gli eventi delle chiamate coinvolte e verificando che almeno uno
+corrisponda, invece di contare sulle invocazioni rimaste dopo un clear a metà. 171/171 test
+verdi in govpay-pafornode-api (+4 rispetto a prima), stabile su esecuzioni ripetute.
 
 ## 4. Punti aperti
 

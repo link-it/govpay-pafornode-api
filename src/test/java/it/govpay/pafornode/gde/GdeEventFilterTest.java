@@ -115,6 +115,51 @@ class GdeEventFilterTest {
         assertThat(eventInfo.getPrincipal()).isNull();
     }
 
+    /**
+     * Il contratto paForNode restituisce un fault applicativo (incluso {@code
+     * PAA_SYSTEM_ERROR}) con HTTP 200, mai un SOAP Fault — lo stato HTTP da solo
+     * classificherebbe l'evento sempre come OK (bug segnalato in revisione). L'attributo di
+     * {@link GdeFaultContext}, che {@code PaForNodeEndpoint} imposterebbe a runtime, ha
+     * precedenza sullo stato HTTP (qui simulato direttamente).
+     */
+    @Test
+    void faultApplicativoConHttp200EClassificatoComeKoNonOk() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/ws");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setStatus(200);
+        FilterChain chain = (req, res) -> {
+            req.setAttribute(GdeFaultContext.FAULT_CODE_ATTRIBUTE, "PAA_PAGAMENTO_SCONOSCIUTO");
+            req.setAttribute(GdeFaultContext.FAULT_DESCRIZIONE_ATTRIBUTE, "Pagamento in attesa risulta sconosciuto");
+        };
+
+        filter.doFilter(request, response, chain);
+
+        GdeEventInfo eventInfo = capturedEventInfo();
+        assertThat(eventInfo.getStatusCodeRisposta()).isEqualTo(200);
+        assertThat(eventInfo.getEsito()).isEqualTo(EsitoEvento.KO);
+        assertThat(eventInfo.getDescrizioneEsito())
+                .isEqualTo("PAA_PAGAMENTO_SCONOSCIUTO: Pagamento in attesa risulta sconosciuto");
+    }
+
+    /** Come sopra, per {@code PAA_SYSTEM_ERROR} (percorso del catch generico, non di una {@code NdpException} esplicita). */
+    @Test
+    void paaSystemErrorConHttp200EClassificatoComeKoNonOk() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/ws");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setStatus(200);
+        FilterChain chain = (req, res) -> {
+            req.setAttribute(GdeFaultContext.FAULT_CODE_ATTRIBUTE, "PAA_SYSTEM_ERROR");
+            req.setAttribute(GdeFaultContext.FAULT_DESCRIZIONE_ATTRIBUTE, "NullPointerException");
+        };
+
+        filter.doFilter(request, response, chain);
+
+        GdeEventInfo eventInfo = capturedEventInfo();
+        assertThat(eventInfo.getStatusCodeRisposta()).isEqualTo(200);
+        assertThat(eventInfo.getEsito()).isEqualTo(EsitoEvento.KO);
+        assertThat(eventInfo.getDescrizioneEsito()).isEqualTo("PAA_SYSTEM_ERROR: NullPointerException");
+    }
+
     @Test
     void handledClientErrorWithoutExceptionIsClassifiedAsKoNot500() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/ws");

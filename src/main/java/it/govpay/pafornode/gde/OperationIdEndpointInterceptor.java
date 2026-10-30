@@ -7,9 +7,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.ws.context.MessageContext;
 import org.springframework.ws.server.endpoint.MethodEndpoint;
 import org.springframework.ws.server.endpoint.interceptor.EndpointInterceptorAdapter;
-import org.springframework.ws.transport.context.TransportContext;
-import org.springframework.ws.transport.context.TransportContextHolder;
-import org.springframework.ws.transport.http.HttpServletConnection;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -44,7 +41,7 @@ public class OperationIdEndpointInterceptor extends EndpointInterceptorAdapter {
 
     @Override
     public boolean handleRequest(MessageContext messageContext, Object endpoint) {
-        HttpServletRequest request = currentHttpServletRequest();
+        HttpServletRequest request = SoapTransportUtils.currentHttpServletRequest();
         if (request == null) {
             return true;
         }
@@ -56,15 +53,6 @@ public class OperationIdEndpointInterceptor extends EndpointInterceptorAdapter {
             request.setAttribute(PRINCIPAL_ATTRIBUTE, principal);
         }
         return true;
-    }
-
-    private static HttpServletRequest currentHttpServletRequest() {
-        TransportContext transportContext = TransportContextHolder.getTransportContext();
-        if (transportContext != null
-                && transportContext.getConnection() instanceof HttpServletConnection connection) {
-            return connection.getHttpServletRequest();
-        }
-        return null;
     }
 
     private static String currentPrincipal() {

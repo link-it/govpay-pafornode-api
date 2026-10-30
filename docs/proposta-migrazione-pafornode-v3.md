@@ -62,8 +62,9 @@ ricerca/lock RPT, deserializzazione del payload originale, validazione semantica
 "standin" (RPT mai attivata da GovPay) **implementata** (§3undecies, 2026-10-29).
 Validazione semantica completa, inclusi i casi ibridi RPTV2_RTV1/RPTV1_RTV2, **completata**
 (§3sexdecies, 2026-10-30). Punto #20 (`statoPagamento` e anomalo forzato su esito gia'
-definitivo) risolto (§3septdecies, 2026-10-30). 221/221 test verdi in
-govpay-common-pendenze, 148/148 in govpay-pafornode-api.
+definitivo) risolto (§3septdecies, 2026-10-30). Giornale degli Eventi (GDE) sulle richieste in
+ingresso portato (§3octodecies, 2026-10-30). 221/221 test verdi in govpay-common-pendenze,
+167/167 in govpay-pafornode-api.
 
 **Decisioni di scope confermate con il committente (2026-10-28)**:
 - Accesso dati tramite `govpay-common-pendenze` (stesso modello v3-nativo di
@@ -1058,6 +1059,74 @@ e' vero, come nel legacy (il ramo "gia' eseguita" da solo non la sovrascrive).
 (`ricevutaDuplicataSuPendenzaGiaEseguitaVieneSegnalataAnomala`, pendenza gia' `ESEGUITO` con
 pagamento gia' `INCASSATO`, verifica `anomalo=true` pur con `irregolare` falso). 148/148
 test verdi in govpay-pafornode-api, 221/221 invariato in govpay-common-pendenze.
+
+## 3octodecies. Giornale degli Eventi (GDE) sulle richieste in ingresso (2026-10-30)
+
+**Gap confermato, previsto dall'inizio ma non implementato**: §2 di questo documento indicava
+gia' `AbstractGdeService` (`govpay-common`) come equivalente v3-nativo del legacy
+`ContextThreadLocal`/`GpContext`/`EventoCtx`, con `ComponenteEvento.API_PAGOPA` anticipato come
+valore da riusare — verificato con il codice che non era mai stato fatto: nessuna classe `Gde*`
+in questo modulo, a differenza di `govpay-pendenze-api` (`PendenzeGdeService`/`GdeEventFilter`/
+`OperationIdHandlerInterceptor`/`GdeWebMvcConfig`/`AsyncGdeConfig`/`GdeCapturingResponseWrapper`).
+Metriche di base (Actuator/Prometheus) e log dinamici/transaction-correlation id risultavano
+invece già presenti, tramite le auto-configurazioni di `govpay-common` (`GovpayMetricsAutoConfiguration`,
+`LoggingAutoConfiguration`, `DynamicLogLevelAutoConfiguration`) — **con una correzione**: la
+seconda di queste due e' `@ConditionalOnBean(ConfigurazioneService.class)`, e questo modulo non
+aveva mai cablato quel bean — i log dinamici NON erano davvero attivi nonostante il commento
+in `application.properties` lo lasciasse intendere. Risolto qui come effetto collaterale (vedi
+sotto).
+
+**Porting delle 6 classi**, stesso principio di `govpay-pendenze-api` ma adattato al trasporto
+SOAP (Spring-WS, non Spring MVC):
+
+- `PaForNodeGdeService extends AbstractGdeService` — componente `ComponenteEvento.API_PAGOPA`
+  (non `PAGOPA`: il nome della costante Java generata dall'OpenAPI di govpay-common e'
+  `API_PAGOPA`, verificato sulla classe generata). `getConfigurazioneComponente` delega a
+  `GdeUtils.getConfigurazioneComponente` (gia' generico, gestisce `API_PAGOPA → giornale
+  .getApiPagoPA()` — non serve piu' un override manuale come in `PendenzeGdeService`, scritto
+  prima che questo metodo diventasse generico).
+- `GdeEventFilter` — `OncePerRequestFilter`, stesso meccanismo "tee" generico di pendenze-api:
+  funziona identico sotto `MessageDispatcherServlet` (e' un filtro Servlet, non legato a Spring
+  MVC). Content-Type catturabile invariato (`text/xml` del binding SOAP 1.1 di questo contratto
+  e' già coperto da `text/*`).
+- `GdeCapturingResponseWrapper` — porting verbatim, nessuna modifica (già generico).
+- `AsyncGdeConfig` — bean `gdeExecutor` **non** alias di `asyncHttpExecutor` (a differenza di
+  pendenze-api): quel nome e' gia' fornito da `AsyncClientConfiguration` (importata in
+  `HttpClientConfig` per SEND/Verifica) — pool separato, piu' piccolo, dedicato solo al GDE.
+- `OperationIdEndpointInterceptor` — **non** un `HandlerInterceptor` Spring MVC (Spring-WS non
+  usa `DispatcherServlet`): implementa `EndpointInterceptor` (`EndpointInterceptorAdapter`),
+  registrato in `WsConfig#addInterceptors` (il metodo esiste gia' su `WsConfigurer`, implementato
+  da `WsConfig` per il marshalling). L'endpoint risolto e' un `MethodEndpoint` (stesso concetto
+  di `HandlerMethod`); l'`HttpServletRequest` sottostante non e' un parametro di
+  `handleRequest` — si recupera da `TransportContextHolder`/`HttpServletConnection`, il
+  meccanismo con cui Spring-WS esporta la connessione HTTP corrente.
+- `ConfigurazioneService` (govpay-common) non era cablato: aggiunto all'`@Import` esistente di
+  `HttpClientConfig`, insieme a `ConnettoreService` da cui dipende (gia' lì) — effetto
+  collaterale: attiva anche `DynamicLogLevelAutoConfiguration` (si veda sopra).
+
+**Fix collaterale in `govpay-common`** (non in questo repo, ma necessario per la correttezza):
+`GdeUtils.isOperazioneScrittura`/`GdeCostanti` classificavano come scrittura `paVerifyPaymentNotice`/
+`paGetPayment`/`paSendRT` ma **non** `paGetPaymentV2`/`paSendRTV2` (mai aggiunti quando le
+varianti V2 furono introdotte) — avrebbero fatto classificare erroneamente quelle due
+operazioni come "lettura" per la policy GDE. Aggiunte le due costanti mancanti
+(`APIPAGOPA_TIPOEVENTO_PAGETPAYMENTV2`/`_PASENDRTV2`) e il relativo controllo; estesa la
+`@ParameterizedTest` di `GdeUtilsPolicyTest` (il cui Javadoc dichiara esplicitamente "l'elenco
+completo, non un campione"). 81/81 test verdi in govpay-common dopo la correzione; installato
+in locale (`mvn install`) perché pafornode-api lo consuma come dipendenza SNAPSHOT.
+
+**Test**: 18 nuovi test unitari (`GdeEventFilterTest`, `AsyncGdeConfigTest`,
+`OperationIdEndpointInterceptorTest`) + 1 nuovo test di integrazione SOAP reale in
+`PaForNodeEndpointTest` (catena completa: interceptor → filtro → confronto del
+`transactionId` dell'evento con l'header di risposta, verifica del nome dell'operazione e del
+principal). `app.gde.async=false` nel profilo test (stesso principio di pendenze-api: invio
+sincrono, i test non devono attendere il thread asincrono). 167/167 test verdi in
+govpay-pafornode-api.
+
+**Segnalate, decisione presa (2026-10-30)**: le metriche CUSTOM di govpay-common
+(`govpay.external.service.duration`, `govpay.api.internal/external.duration`, via
+`GovpayMetricsAutoConfiguration`) restano disattivate — manca `govpay.metrics.enabled=true` in
+`application.properties`. Solo lo scaffolding Actuator/Prometheus di base (gia' presente) e'
+attivo. Il committente ha deciso di non introdurle in questo progetto per ora.
 
 ## 4. Punti aperti
 

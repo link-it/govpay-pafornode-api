@@ -8,6 +8,7 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.oxm.jaxb.Jaxb2Marshaller;
 import org.springframework.ws.config.annotation.EnableWs;
 import org.springframework.ws.config.annotation.WsConfigurer;
+import org.springframework.ws.server.EndpointInterceptor;
 import org.springframework.ws.server.endpoint.adapter.method.MethodArgumentResolver;
 import org.springframework.ws.server.endpoint.adapter.method.MethodReturnValueHandler;
 import org.springframework.ws.server.endpoint.adapter.method.MarshallingPayloadMethodProcessor;
@@ -23,6 +24,7 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
+import it.govpay.pafornode.gde.OperationIdEndpointInterceptor;
 
 /**
  * Espone {@code paForNode.wsdl} (gia' presente in risorse, pubblicato da pagoPA) cosi' com'e':
@@ -36,6 +38,12 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 @EnableWs
 @Configuration
 public class WsConfig implements WsConfigurer {
+
+	private final OperationIdEndpointInterceptor operationIdEndpointInterceptor;
+
+	public WsConfig(OperationIdEndpointInterceptor operationIdEndpointInterceptor) {
+		this.operationIdEndpointInterceptor = operationIdEndpointInterceptor;
+	}
 
 	@Bean
 	public ServletRegistrationBean<MessageDispatcherServlet> messageDispatcherServlet(
@@ -93,5 +101,15 @@ public class WsConfig implements WsConfigurer {
 	@Override
 	public void addReturnValueHandlers(List<MethodReturnValueHandler> returnValueHandlers) {
 		returnValueHandlers.add(new MarshallingPayloadMethodProcessor(marshaller()));
+	}
+
+	/**
+	 * {@link OperationIdEndpointInterceptor} popola gli attributi di richiesta che
+	 * {@code it.govpay.pafornode.gde.GdeEventFilter} legge dopo l'esecuzione della catena —
+	 * stesso ruolo di un {@code HandlerInterceptor} Spring MVC, qui per {@code @EnableWs}.
+	 */
+	@Override
+	public void addInterceptors(List<EndpointInterceptor> interceptors) {
+		interceptors.add(operationIdEndpointInterceptor);
 	}
 }

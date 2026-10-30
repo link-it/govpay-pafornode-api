@@ -13,6 +13,7 @@ import jakarta.persistence.PersistenceContext;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.mockito.Mockito;
@@ -58,6 +59,8 @@ import it.govpay.pendenze.model.TipoSoggetto;
 import it.govpay.pendenze.model.TipologiaOpzionePagamento;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 import it.govpay.common.utils.IuvUtils.IdentificativiPagamento;
+import it.govpay.common.gde.GdeEventInfo;
+import it.govpay.pafornode.gde.PaForNodeGdeService;
 
 /**
  * Verifica {@code paVerifyPaymentNotice} a livello di integrazione (contesto Spring completo,
@@ -131,6 +134,9 @@ class PaForNodeEndpointTest {
 
 	@Autowired
 	private PlatformTransactionManager transactionManager;
+
+	@MockitoBean
+	private PaForNodeGdeService paForNodeGdeService;
 
 	private Long idDominio;
 	private Long idApplicazione;
@@ -337,6 +343,34 @@ class PaForNodeEndpointTest {
 				"<fiscalCodePA>" + COD_DOMINIO + "</fiscalCodePA>",
 				"<companyName>Comune di Test</companyName>",
 				"<amount>16.0</amount>");
+	}
+
+	/**
+	 * Verifica l'INTERA catena reale (non solo {@code GdeEventFilter} in isolamento, come
+	 * {@code GdeEventFilterTest}): {@code OperationIdEndpointInterceptor} valorizza l'attributo
+	 * di richiesta dentro {@code MessageDispatcherServlet}, {@code GdeEventFilter} lo legge nel
+	 * proprio {@code finally} dopo che anche {@code TransactionIdFilter} ha gia' scritto
+	 * l'header di risposta — l'ordine tra i due filtri e' quindi esercitato per davvero, non
+	 * assunto. {@code PaForNodeGdeService} e' mockato: non serve un connettore GDE configurato,
+	 * interessa solo l'evento passato al mock.
+	 */
+	@Test
+	void eventoGdeDellaCatenaRealePortaLoStessoTransactionIdRestituitoAlClientEIlNomeDellOperazione() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-gde-1", 16.00);
+
+		ResponseEntity<String> risposta = invia(
+				envelope(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO, identificativi.numeroAvviso()));
+
+		String transactionIdRisposta = risposta.getHeaders().getFirst("X-Transaction-ID");
+		assertThat(transactionIdRisposta).isNotBlank();
+
+		Mockito.verify(paForNodeGdeService).inviaEventoAsync(Mockito.argThat(evento -> {
+			assertThat(evento.getTipoEvento()).isEqualTo("paVerifyPaymentNotice");
+			assertThat(evento.getTransactionId()).isEqualTo(transactionIdRisposta);
+			assertThat(evento.getPrincipal()).isEqualTo(PRINCIPAL_INTERMEDIARIO);
+			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
+			return true;
+		}));
 	}
 
 	@Test

@@ -18,7 +18,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -434,15 +433,20 @@ class PaForNodeEndpointTest {
 	 * l'evento sul mock: leggere l'elenco una volta sola, subito dopo {@code invia()}, è una
 	 * corsa — osservata realmente su CI (riproducibile a intermittenza, non su ogni
 	 * esecuzione) anche quando localmente non si manifestava.
+	 * <p>
+	 * Usa {@code Mockito.mockingDetails(...).getInvocations()}, non {@code Mockito.verify}:
+	 * quest'ultimo, con {@code atLeastOnce()}, LANCIA subito se le invocazioni sono zero
+	 * (non le "non trova e basta") — col mock ancora a zero interazioni (il caso più comune
+	 * a inizio polling) il loop non arriverebbe mai al retry.
 	 */
 	private GdeEventInfo attendiEventoGde(java.util.function.Predicate<GdeEventInfo> condizione)
 			throws InterruptedException {
 		long scadenza = System.currentTimeMillis() + 2000;
 		List<GdeEventInfo> ultimiVisti = List.of();
 		while (System.currentTimeMillis() < scadenza) {
-			ArgumentCaptor<GdeEventInfo> captor = ArgumentCaptor.forClass(GdeEventInfo.class);
-			Mockito.verify(paForNodeGdeService, Mockito.atLeastOnce()).inviaEventoAsync(captor.capture());
-			ultimiVisti = captor.getAllValues();
+			ultimiVisti = Mockito.mockingDetails(paForNodeGdeService).getInvocations().stream()
+					.map(inv -> (GdeEventInfo) inv.getArgument(0))
+					.toList();
 			Optional<GdeEventInfo> trovato = ultimiVisti.stream().filter(condizione).findFirst();
 			if (trovato.isPresent()) {
 				return trovato.get();

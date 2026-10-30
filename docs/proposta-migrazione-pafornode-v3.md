@@ -1153,14 +1153,24 @@ come richiesto in revisione.
 entrambi con HTTP 200 simulato) + 2 nuovi test di integrazione SOAP reale in
 `PaForNodeEndpointTest` (stesso scenario reale di pendenza sconosciuta/collisione RPT, con
 verifica dell'evento GDE). **Race condition trovata e corretta nel test, non
-nell'implementazione**: il body della risposta HTTP può arrivare al client PRIMA che il
-`finally` di `GdeEventFilter` finisca di registrare l'evento sul mock — un
-`Mockito.clearInvocations` tra due chiamate sequenziali e' quindi una corsa, non una
-sincronizzazione reale (osservato empiricamente: a volte 0 invocazioni visibili subito dopo
-la prima chiamata, poi 2 insieme al controllo finale). Corretto raccogliendo con un
-`ArgumentCaptor` tutti gli eventi delle chiamate coinvolte e verificando che almeno uno
-corrisponda, invece di contare sulle invocazioni rimaste dopo un clear a metà. 171/171 test
-verdi in govpay-pafornode-api (+4 rispetto a prima), stabile su esecuzioni ripetute.
+nell'implementazione** — in due round, il secondo scoperto solo su CI:
+
+1. Il body della risposta HTTP può arrivare al client PRIMA che il `finally` di
+   `GdeEventFilter` finisca di registrare l'evento sul mock — un `Mockito.clearInvocations`
+   tra due chiamate sequenziali e' quindi una corsa, non una sincronizzazione reale (osservato
+   empiricamente in locale: a volte 0 invocazioni visibili subito dopo la prima chiamata, poi
+   2 insieme al controllo finale). Primo tentativo di fix: raccogliere con un `ArgumentCaptor`
+   tutti gli eventi delle chiamate coinvolte, verificando che almeno uno corrisponda — passava
+   in locale (3 esecuzioni) ma non su CI, dove il timing e' ancora piu' stretto.
+2. **Causa vera**: serve un vero poll con attesa limitata, non un solo controllo — ma
+   `Mockito.verify(mock, atLeastOnce())` LANCIA subito un'eccezione se le invocazioni sono
+   zero (non restituisce "nessun match", come farebbe un confronto su valori già presenti):
+   un primo tentativo di loop basato su `verify` non arrivava mai al retry quando il mock
+   aveva ancora zero interazioni (il caso più comune a inizio polling, probabile su CI). Fix
+   definitivo: helper `attendiEventoGde` che legge `Mockito.mockingDetails(mock)
+   .getInvocations()` direttamente (non lancia mai) in un loop di massimo 2 secondi/20ms,
+   usato da tutti e 3 i test che leggono eventi GDE in questo file. 171/171 test verdi in
+   govpay-pafornode-api (+4 rispetto a prima), stabile su esecuzioni locali ripetute.
 
 ## 4. Punti aperti
 

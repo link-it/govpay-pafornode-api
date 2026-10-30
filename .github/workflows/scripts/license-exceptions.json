@@ -9,6 +9,16 @@
       "groupId": "org.gov4j.govpay",
       "artifactId": "govpay-common-auth",
       "reason": "Libreria interna del progetto GovPay, stesso licenziatario (Link.it s.r.l.), compatibile GPLv3"
+    },
+    {
+      "groupId": "org.gov4j.govpay",
+      "artifactId": "govpay-common-pendenze",
+      "reason": "Libreria interna del progetto GovPay, stesso licenziatario (Link.it s.r.l.), compatibile GPLv3"
+    },
+    {
+      "groupId": "org.gov4j.govpay",
+      "artifactId": "govpay-ec-client",
+      "reason": "Libreria interna del progetto GovPay, stesso licenziatario (Link.it s.r.l.), compatibile GPLv3"
     }
   ]
 }

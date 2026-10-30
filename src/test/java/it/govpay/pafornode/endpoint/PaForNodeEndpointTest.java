@@ -6,6 +6,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.util.List;
+import java.util.Optional;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -357,7 +359,7 @@ class PaForNodeEndpointTest {
 	 * interessa solo l'evento passato al mock.
 	 */
 	@Test
-	void eventoGdeDellaCatenaRealePortaLoStessoTransactionIdRestituitoAlClientEIlNomeDellOperazione() {
+	void eventoGdeDellaCatenaRealePortaLoStessoTransactionIdRestituitoAlClientEIlNomeDellOperazione() throws InterruptedException {
 		IdentificativiPagamento identificativi = creaPendenza("doc-gde-1", 16.00);
 
 		ResponseEntity<String> risposta = invia(
@@ -366,13 +368,10 @@ class PaForNodeEndpointTest {
 		String transactionIdRisposta = risposta.getHeaders().getFirst("X-Transaction-ID");
 		assertThat(transactionIdRisposta).isNotBlank();
 
-		Mockito.verify(paForNodeGdeService).inviaEventoAsync(Mockito.argThat(evento -> {
-			assertThat(evento.getTipoEvento()).isEqualTo("paVerifyPaymentNotice");
-			assertThat(evento.getTransactionId()).isEqualTo(transactionIdRisposta);
-			assertThat(evento.getPrincipal()).isEqualTo(PRINCIPAL_INTERMEDIARIO);
-			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
-			return true;
-		}));
+		GdeEventInfo evento = attendiEventoGde(e -> "paVerifyPaymentNotice".equals(e.getTipoEvento()));
+		assertThat(evento.getTransactionId()).isEqualTo(transactionIdRisposta);
+		assertThat(evento.getPrincipal()).isEqualTo(PRINCIPAL_INTERMEDIARIO);
+		assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
 	}
 
 	/**
@@ -382,7 +381,7 @@ class PaForNodeEndpointTest {
 	 * con lo stato HTTP reale comunque riportato a parte (200, non alterato).
 	 */
 	@Test
-	void eventoGdeClassificaComeKoUnFaultFunzionaleAncheConHttp200() {
+	void eventoGdeClassificaComeKoUnFaultFunzionaleAncheConHttp200() throws InterruptedException {
 		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999999L);
 
 		ResponseEntity<String> risposta = invia(envelope(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
@@ -390,12 +389,9 @@ class PaForNodeEndpointTest {
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-		Mockito.verify(paForNodeGdeService).inviaEventoAsync(Mockito.argThat(evento -> {
-			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
-			assertThat(evento.getEsito()).isEqualTo(EsitoEvento.KO);
-			assertThat(evento.getDescrizioneEsito()).contains("PAA_PAGAMENTO_SCONOSCIUTO");
-			return true;
-		}));
+		GdeEventInfo evento = attendiEventoGde(e -> e.getEsito() == EsitoEvento.KO);
+		assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
+		assertThat(evento.getDescrizioneEsito()).contains("PAA_PAGAMENTO_SCONOSCIUTO");
 	}
 
 	/**
@@ -409,12 +405,12 @@ class PaForNodeEndpointTest {
 	 * <p>Niente {@code clearInvocations} tra le due chiamate: il body della risposta HTTP può
 	 * arrivare al client (quindi a {@code invia()}) PRIMA che il {@code finally} di {@code
 	 * GdeEventFilter} finisca di registrare l'evento sul mock — un {@code clearInvocations}
-	 * tra le due {@code invia()} è quindi una corsa, non una sincronizzazione reale.
-	 * Si raccolgono invece TUTTI gli eventi delle due chiamate e si verifica che almeno uno
-	 * sia il KO con {@code PAA_SYSTEM_ERROR} atteso.</p>
+	 * tra le due {@code invia()} è quindi una corsa, non una sincronizzazione reale, e lo
+	 * stesso vale per leggere l'elenco delle invocazioni una volta sola subito dopo
+	 * {@code invia()}: va atteso con {@link #attendiEventoGde} (vedi Javadoc).</p>
 	 */
 	@Test
-	void eventoGdeClassificaComeKoUnPaaSystemErrorAncheConHttp200() {
+	void eventoGdeClassificaComeKoUnPaaSystemErrorAncheConHttp200() throws InterruptedException {
 		IdentificativiPagamento identificativi = creaPendenza("doc-gde-system-error", 16.00);
 		String richiesta = envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
 				identificativi.numeroAvviso());
@@ -425,13 +421,36 @@ class PaForNodeEndpointTest {
 		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(seconda.getBody()).contains("<faultCode>PAA_SYSTEM_ERROR</faultCode>");
 
-		ArgumentCaptor<GdeEventInfo> captor = ArgumentCaptor.forClass(GdeEventInfo.class);
-		Mockito.verify(paForNodeGdeService, Mockito.atLeastOnce()).inviaEventoAsync(captor.capture());
-		assertThat(captor.getAllValues()).anySatisfy(evento -> {
-			assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
-			assertThat(evento.getEsito()).isEqualTo(EsitoEvento.KO);
-			assertThat(evento.getDescrizioneEsito()).contains("PAA_SYSTEM_ERROR");
-		});
+		GdeEventInfo evento = attendiEventoGde(e -> e.getEsito() == EsitoEvento.KO);
+		assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
+		assertThat(evento.getDescrizioneEsito()).contains("PAA_SYSTEM_ERROR");
+	}
+
+	/**
+	 * Attende (fino a 2 secondi, poll ogni 20ms) un evento GDE che soddisfi la condizione
+	 * data, invece di leggere l'elenco delle invocazioni del mock una volta sola — il body
+	 * della risposta HTTP può arrivare al client (quindi al chiamante di {@code invia()})
+	 * PRIMA che il {@code finally} di {@code GdeEventFilter} abbia finito di registrare
+	 * l'evento sul mock: leggere l'elenco una volta sola, subito dopo {@code invia()}, è una
+	 * corsa — osservata realmente su CI (riproducibile a intermittenza, non su ogni
+	 * esecuzione) anche quando localmente non si manifestava.
+	 */
+	private GdeEventInfo attendiEventoGde(java.util.function.Predicate<GdeEventInfo> condizione)
+			throws InterruptedException {
+		long scadenza = System.currentTimeMillis() + 2000;
+		List<GdeEventInfo> ultimiVisti = List.of();
+		while (System.currentTimeMillis() < scadenza) {
+			ArgumentCaptor<GdeEventInfo> captor = ArgumentCaptor.forClass(GdeEventInfo.class);
+			Mockito.verify(paForNodeGdeService, Mockito.atLeastOnce()).inviaEventoAsync(captor.capture());
+			ultimiVisti = captor.getAllValues();
+			Optional<GdeEventInfo> trovato = ultimiVisti.stream().filter(condizione).findFirst();
+			if (trovato.isPresent()) {
+				return trovato.get();
+			}
+			Thread.sleep(20);
+		}
+		throw new AssertionError(
+				"Nessun evento GDE soddisfa la condizione entro il timeout. Eventi visti: " + ultimiVisti);
 	}
 
 	@Test

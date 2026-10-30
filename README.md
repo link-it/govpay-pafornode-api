@@ -28,7 +28,7 @@ Operazioni esposte (contratto in [src/main/resources/xsd/paForNode.wsdl](src/mai
 
 L'operazione `paDemandPaymentNotice`, presente nel WSDL di pagoPA, **non è supportata**: la richiesta riceve HTTP 404.
 
-Tutte le operazioni rispondono su un unico endpoint, `POST /ws`: Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblicato in `GET /ws/paForNode.wsdl` (con autenticazione), con l'indirizzo del servizio (`soap:address`) riscritto su host e porta della richiesta: `<host>/ws`. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA.
+Tutte le operazioni rispondono su un unico endpoint, `POST /ws`: Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblicato in `GET /ws/paForNode.wsdl` (con autenticazione), con l'indirizzo del servizio (`soap:address`) riscritto su host e porta della richiesta: `<host>/ws`. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA. Le richieste che non sono messaggi SOAP ricevono un errore HTTP: 415 se il Content-Type non è `text/xml` o `application/soap+xml`, 400 se l'XML è malformato o non ha un `Envelope`, 405 per i metodi diversi da POST.
 
 ### Autenticazione
 

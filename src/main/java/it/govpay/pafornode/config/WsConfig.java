@@ -30,7 +30,9 @@ import it.govpay.pafornode.gde.OperationIdEndpointInterceptor;
  * Espone {@code paForNode.wsdl} (gia' presente in risorse, pubblicato da pagoPA) cosi' com'e':
  * {@link SimpleWsdl11Definition} serve il file esistente, non lo ricostruisce da un singolo
  * XSD come farebbe {@code DefaultWsdl11Definition} — il contratto deve restare bit-per-bit
- * quello pubblicato, il Nodo dei Pagamenti lo valida.
+ * quello pubblicato, il Nodo dei Pagamenti lo valida. Unica differenza dal file di pagoPA:
+ * il {@code soap:address} punta al path reale del servizio ({@code /ws}); host e porta sono
+ * riscritti con quelli della richiesta ({@code transformWsdlLocations}).
  *
  * <p>Il bean {@code paForNode} e' esposto su {@code /ws/paForNode.wsdl} (nome del bean =
  * nome del file, per convenzione di {@link MessageDispatcherServlet}).</p>
@@ -48,7 +50,8 @@ public class WsConfig implements WsConfigurer {
 	@Bean
 	public ServletRegistrationBean<MessageDispatcherServlet> messageDispatcherServlet(
 			ApplicationContext applicationContext) {
-		MessageDispatcherServlet servlet = new MessageDispatcherServlet();
+		// Variante che risponde 415/400, non 500, alle richieste non SOAP
+		MessageDispatcherServlet servlet = new PaForNodeMessageDispatcherServlet();
 		servlet.setApplicationContext(applicationContext);
 		servlet.setTransformWsdlLocations(true);
 		return new ServletRegistrationBean<>(servlet, "/ws/*");

@@ -29,7 +29,7 @@ rm -rf /var/cache/apk/*; \
 echo "${TZ}" > /etc/timezone; \
 addgroup -S govpay ; \
 adduser -S -G govpay govpay; \
-mkdir -p ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR}; \
+mkdir -p ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR} /opt/jdbc-drivers; \
 chown -R govpay:govpay ${GOVPAY_PAFORNODE_HOME} ${GOVPAY_PAFORNODE_LOGDIR}
 
 WORKDIR ${GOVPAY_PAFORNODE_HOME}
@@ -56,9 +56,7 @@ RUN chown -R govpay:0 /usr/local/bin/entrypoint.sh ${GOVPAY_PAFORNODE_HOME} ${GO
 
 USER govpay
 
-ENV LOGGING_FILE_NAME=${GOVPAY_PAFORNODE_LOGDIR}/govpay-pafornode-api.log \
-    LOGGING_DIRECTORYPATH=${GOVPAY_PAFORNODE_LOGDIR} \
-    LOGGING_FILEPREFIX=govpay-pafornode-api
+ENV LOGGING_FILE_NAME=${GOVPAY_PAFORNODE_LOGDIR}/govpay-pafornode-api.log
 
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

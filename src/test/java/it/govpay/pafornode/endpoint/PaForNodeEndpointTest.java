@@ -1,6 +1,7 @@
 package it.govpay.pafornode.endpoint;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -38,6 +39,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.http.HttpStatusCode;
 
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
@@ -324,6 +328,42 @@ class PaForNodeEndpointTest {
 	}
 
 	@Test
+	void probeLivenessEReadinessAccessibiliSenzaAutenticazione() {
+		for (String probe : new String[] { "/actuator/health/liveness", "/actuator/health/readiness" }) {
+			ResponseEntity<String> risposta = restTemplate.getForEntity("http://localhost:" + port + probe,
+					String.class);
+			assertThat(risposta.getStatusCode()).as(probe).isEqualTo(HttpStatus.OK);
+		}
+	}
+
+	@Test
+	void richiesteNonSoapRispondonoConErroreDelClient() {
+		assertThat(statoPost("{}", MediaType.APPLICATION_JSON)).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+		assertThat(statoPost("<a/>", MediaType.TEXT_XML)).isEqualTo(HttpStatus.BAD_REQUEST);
+		assertThat(statoPost("<soapenv:Envelope", MediaType.TEXT_XML)).isEqualTo(HttpStatus.BAD_REQUEST);
+
+		HttpHeaders headers = new HttpHeaders();
+		headers.add(HEADER_PRINCIPAL, PRINCIPAL_INTERMEDIARIO);
+		assertThatThrownBy(() -> restTemplate.exchange("http://localhost:" + port + "/ws", HttpMethod.GET,
+				new HttpEntity<>(headers), String.class))
+				.isInstanceOfSatisfying(HttpClientErrorException.class,
+						e -> assertThat(e.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED));
+	}
+
+	private HttpStatusCode statoPost(String body, MediaType contentType) {
+		HttpHeaders headers = new HttpHeaders();
+		headers.setContentType(contentType);
+		headers.add(HEADER_PRINCIPAL, PRINCIPAL_INTERMEDIARIO);
+		try {
+			return restTemplate.postForEntity("http://localhost:" + port + "/ws", new HttpEntity<>(body, headers),
+					String.class).getStatusCode();
+		}
+		catch (HttpStatusCodeException e) {
+			return e.getStatusCode();
+		}
+	}
+
+	@Test
 	void wsdlEspostoSullaPathAttesa() {
 		HttpHeaders headers = new HttpHeaders();
 		headers.add(HEADER_PRINCIPAL, PRINCIPAL_INTERMEDIARIO);
@@ -332,6 +372,8 @@ class PaForNodeEndpointTest {
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("paVerifyPaymentNotice");
+		// L'indirizzo del servizio nel WSDL e' quello su cui risponde davvero (/ws)
+		assertThat(risposta.getBody()).contains("soap:address location=\"http://localhost:" + port + "/ws\"");
 	}
 
 	@Test

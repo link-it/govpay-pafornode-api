@@ -1,18 +1,14 @@
 package it.govpay.pafornode.rpt;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.time.Clock;
 import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.UUID;
 
 import javax.xml.transform.stream.StreamSource;
 
 import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBElement;
 import jakarta.xml.bind.JAXBException;
-import jakarta.xml.bind.Marshaller;
 import jakarta.xml.bind.Unmarshaller;
 
 import org.springframework.stereotype.Service;
@@ -20,10 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
-import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.StazioneEntity;
 import it.govpay.pendenze.entity.Pendenza;
@@ -32,18 +26,23 @@ import it.govpay.pendenze.repository.PendenzaRepository;
 import it.govpay.pendenze.repository.RptRepository;
 
 /**
- * Attivazione di una RPT (analisi completa del legacy, {@code CtPaymentPABuilder}/
- * {@code it.govpay.core.business.Rpt#annullaRPTPendenti}, nel design doc): annulla le RPT
- * pendenti sulla stessa coppia dominio/iuv, poi persiste la nuova RPT con l'XML della
- * risposta serializzato — {@link #attiva}/{@link #deserializzaDati} per {@code paGetPayment}
- * (V1, {@code CtPaymentPA}), {@link #attivaV2}/{@link #deserializzaDatiV2} per {@code
- * paGetPaymentV2} ({@code CtPaymentPAV2}, versione RPT {@code SANP_321_V2}, {@code
- * codCarrello}).
+ * Nascita/aggiornamento di una RPT dopo questa fase dell'issue #6: {@link #ricostruisci} e'
+ * ora l'UNICO modo in cui questo servizio crea una riga {@code rpt} — l'attivazione
+ * ({@code paGetPayment}/{@code paGetPaymentV2}) e' diventata una sola lettura della pendenza,
+ * nessuna RPT viene piu' scritta li' (vedi Javadoc di classe di
+ * {@code PaGetPaymentActivationService}). La riga nasce quindi solo all'arrivo della
+ * ricevuta, come nel percorso StandIn del core (porting di {@code
+ * CtReceiptUtils.ricostruisciRPT}/{@code CtReceiptV2Utils.ricostruisciRPT} del monolite),
+ * ma e' ora il percorso UNICO, orchestrato da {@code PaSendRTService} con lock sulla
+ * pendenza e gestione dei duplicati.
  *
- * <p>{@link #ricostruisci} copre invece il caso "standin" (punto aperto #14 del design
- * doc): una RPT mai attivata da GovPay, ricostruita al volo quando arriva direttamente la
- * ricevuta — porting di {@code CtReceiptUtils.ricostruisciRPT}/{@code
- * CtReceiptV2Utils.ricostruisciRPT} del monolite, usato da {@code PaSendRTService}.</p>
+ * <p>{@link #deserializzaDati}/{@link #deserializzaDatiV2} e
+ * {@link #rifiutaPerValidazioneSemantica} restano necessari per le RPT scritte dal
+ * <b>vecchio core prima del passaggio alla 3.11</b> (hanno {@code xmlRpt}: la loro ricevuta,
+ * se arriva dopo il passaggio, va aggiornata — non duplicata — con la validazione semantica
+ * RT-contro-RPT ancora applicabile; vedi "Casi da non dimenticare" dell'issue). Per le RPT
+ * nate da {@link #ricostruisci} {@code xmlRpt} e' sempre {@code null}: quella validazione
+ * viene saltata dal chiamante, stessa condizione del legacy.</p>
  */
 @Service
 public class RptAttivazioneService {
@@ -73,7 +72,6 @@ public class RptAttivazioneService {
 	private final PendenzaRepository pendenzaRepository;
 	private final RptRepository rptRepository;
 	private final Clock clock;
-	private final ObjectFactory objectFactory = new ObjectFactory();
 	private final JAXBContext jaxbContext;
 	private final JAXBContext jaxbContextV2;
 
@@ -87,38 +85,6 @@ public class RptAttivazioneService {
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
 		}
-	}
-
-	/**
-	 * Annulla le RPT pendenti sulla stessa coppia dominio/iuv e persiste la nuova RPT
-	 * attivata (stato finale {@code RPT_ACCETTATA_NODO}, come nel legacy), con l'XML della
-	 * risposta {@code paGetPayment} come corpo.
-	 *
-	 * <p>Acquisisce prima il lock sulla pendenza stessa ({@code SELECT ... FOR UPDATE}):
-	 * il lock sulle sole RPT pendenti (in {@link #annullaPendenti}) non basta a serializzare
-	 * due attivazioni concorrenti quando non ce n'e' ancora nessuna — entrambe troverebbero
-	 * un risultato vuoto e creerebbero due RPT attive sulla stessa pendenza.</p>
-	 */
-	@Transactional
-	public Rpt attiva(Pendenza pendenza, DominioEntity dominio, StazioneEntity stazione, String ccp,
-			CtPaymentPA ctPayment) {
-		Rpt rpt = nuovaRptAttivata(pendenza, dominio, stazione, ccp, VERSIONE_SANP_240, null);
-		rpt.setXmlRpt(serializza(ctPayment));
-		return rptRepository.save(rpt);
-	}
-
-	/**
-	 * Come {@link #attiva}, per {@code paGetPaymentV2}: versione RPT {@code SANP_321_V2},
-	 * payload {@code CtPaymentPAV2} (puo' contenere Marca da Bollo Telematica/metadati,
-	 * assenti da {@code CtPaymentPA}), e {@code codCarrello} dalla richiesta (gia' troncato
-	 * a 35 caratteri dal chiamante, stesso limite del legacy).
-	 */
-	@Transactional
-	public Rpt attivaV2(Pendenza pendenza, DominioEntity dominio, StazioneEntity stazione, String ccp,
-			String codCarrello, CtPaymentPAV2 ctPayment) {
-		Rpt rpt = nuovaRptAttivata(pendenza, dominio, stazione, ccp, VERSIONE_SANP_321_V2, codCarrello);
-		rpt.setXmlRpt(serializzaV2(ctPayment));
-		return rptRepository.save(rpt);
 	}
 
 	/**
@@ -151,18 +117,16 @@ public class RptAttivazioneService {
 	}
 
 	/**
-	 * Ricostruisce una RPT "standin": nessuna richiesta di pagamento originale da cui
-	 * ripartire, {@code xmlRpt} resta {@code null} — la validazione semantica
-	 * RT-contro-RPT viene quindi saltata dal chiamante, stesso comportamento del legacy
-	 * che la condiziona a {@code rpt.getXmlRpt() != null}.
-	 *
-	 * <p>A differenza di {@link #attiva}/{@link #attivaV2}: nessun {@link
-	 * #annullaPendenti} (per costruzione non esiste ancora nessuna RPT su questa
-	 * pendenza, altrimenti il chiamante non avrebbe scelto questo percorso); la stazione
-	 * e' quella di default del dominio ({@link DominioEntity#getStazione()}), non quella
-	 * autenticata dalla chiamata corrente — non c'e' stata nessuna attivazione a cui
-	 * agganciarsi; {@code codMsgRichiesta}/{@code iur} sono il {@code receiptId} della
-	 * ricevuta in arrivo, non un valore generato qui.</p>
+	 * Ricostruisce una RPT: nessuna richiesta di pagamento originale da cui ripartire,
+	 * {@code xmlRpt} resta {@code null} — la validazione semantica RT-contro-RPT viene
+	 * quindi saltata dal chiamante, stesso comportamento del legacy che la condiziona a
+	 * {@code rpt.getXmlRpt() != null}. Nessun annullamento di RPT pendenti: per costruzione
+	 * non esiste ancora nessuna RPT su questa pendenza, altrimenti il chiamante non avrebbe
+	 * scelto questo percorso. La stazione e' quella di default del dominio
+	 * ({@link DominioEntity#getStazione()}), non quella autenticata dalla chiamata corrente
+	 * — non c'e' stata nessuna attivazione a cui agganciarsi; {@code codMsgRichiesta}/
+	 * {@code iur} sono il {@code receiptId} della ricevuta in arrivo, non un valore generato
+	 * qui.
 	 */
 	@Transactional
 	public Rpt ricostruisci(Pendenza pendenza, DominioEntity dominio, String versione, String receiptId,
@@ -190,37 +154,9 @@ public class RptAttivazioneService {
 		return rptRepository.save(rpt);
 	}
 
-	private Rpt nuovaRptAttivata(Pendenza pendenza, DominioEntity dominio, StazioneEntity stazione, String ccp,
-			String versione, String codCarrello) {
-		pendenzaRepository.findByIdForUpdate(pendenza.getId())
-				.orElseThrow(() -> new IllegalStateException("Pendenza [" + pendenza.getId() + "] non trovata."));
-
-		annullaPendenti(dominio.getCodDominio(), pendenza.getIuv());
-
-		OffsetDateTime adesso = OffsetDateTime.now(clock);
-		Rpt rpt = new Rpt();
-		rpt.setIdVersamento(pendenza.getId());
-		rpt.setIuv(pendenza.getIuv());
-		rpt.setIur(ccp);
-		rpt.setCodDominio(dominio.getCodDominio());
-		rpt.setCodStazione(stazione.getCodStazione());
-		rpt.setCodMsgRichiesta(UUID.randomUUID().toString().replace("-", ""));
-		rpt.setVersione(versione);
-		rpt.setCodCarrello(codCarrello);
-		// Stato finale di una attivazione riuscita, non l'intermedio RPT_ATTIVATA: nel legacy
-		// la RPT passa a RPT_ACCETTATA_NODO prima del commit (qui non c'e' un invio asincrono
-		// separato da attendere, l'intera operazione e' nella stessa transazione).
-		rpt.setStato(StatoRpt.RPT_ACCETTATA_NODO.name());
-		rpt.setDataMsgRichiesta(adesso);
-		rpt.setDataAggiornamentoStato(adesso);
-		rpt.setModelloPagamento(MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
-		return rpt;
-	}
-
 	/**
-	 * Rilegge il {@code CtPaymentPA} dall'XML appena persistito su {@link Rpt#getXmlRpt()},
-	 * invece di riusare l'oggetto in memoria passato ad {@link #attiva} — stessa garanzia di
-	 * coerenza-con-quanto-scritto del legacy ({@code JaxbUtils.toPaGetPaymentResRPT}).
+	 * Rilegge il {@code CtPaymentPA} dall'XML conservato su {@link Rpt#getXmlRpt()} — una RPT
+	 * scritta dal vecchio core prima del passaggio alla 3.11 (vedi Javadoc di classe).
 	 */
 	public CtPaymentPA deserializzaDati(Rpt rpt) {
 		try {
@@ -246,49 +182,6 @@ public class RptAttivazioneService {
 			JAXBElement<PaGetPaymentV2Response> risultato = unmarshaller.unmarshal(
 					new StreamSource(new ByteArrayInputStream(rpt.getXmlRpt())), PaGetPaymentV2Response.class);
 			return risultato.getValue().getData();
-		} catch (JAXBException e) {
-			throw new IllegalStateException(e);
-		}
-	}
-
-	private void annullaPendenti(String codDominio, String iuv) {
-		List<Rpt> pendenti = rptRepository.findByCodDominioAndIuvAndStatoInAndModelloPagamento(codDominio, iuv,
-				StatoRpt.STATI_PENDENTI, MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
-		if (pendenti.isEmpty()) {
-			return;
-		}
-		OffsetDateTime adesso = OffsetDateTime.now(clock);
-		for (Rpt rpt : pendenti) {
-			rpt.setStato(StatoRpt.RPT_ANNULLATA.name());
-			rpt.setDescrizioneStato("Ricevuta richiesta di un nuovo tentativo di pagamento");
-			rpt.setDataAggiornamentoStato(adesso);
-		}
-		rptRepository.saveAll(pendenti);
-	}
-
-	private byte[] serializza(CtPaymentPA ctPayment) {
-		PaGetPaymentRes risposta = new PaGetPaymentRes();
-		risposta.setOutcome(StOutcome.OK);
-		risposta.setData(ctPayment);
-		try {
-			Marshaller marshaller = jaxbContext.createMarshaller();
-			ByteArrayOutputStream output = new ByteArrayOutputStream();
-			marshaller.marshal(objectFactory.createPaGetPaymentRes(risposta), output);
-			return output.toByteArray();
-		} catch (JAXBException e) {
-			throw new IllegalStateException(e);
-		}
-	}
-
-	private byte[] serializzaV2(CtPaymentPAV2 ctPayment) {
-		PaGetPaymentV2Response risposta = new PaGetPaymentV2Response();
-		risposta.setOutcome(StOutcome.OK);
-		risposta.setData(ctPayment);
-		try {
-			Marshaller marshaller = jaxbContextV2.createMarshaller();
-			ByteArrayOutputStream output = new ByteArrayOutputStream();
-			marshaller.marshal(objectFactory.createPaGetPaymentV2Response(risposta), output);
-			return output.toByteArray();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
 		}

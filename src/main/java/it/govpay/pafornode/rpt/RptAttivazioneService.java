@@ -155,6 +155,42 @@ public class RptAttivazioneService {
 	}
 
 	/**
+	 * Come {@link #ricostruisci}, per una ricevuta SENZA pendenza (issue #6, stazione in
+	 * broadcast): nessuna {@link Pendenza} da bloccare/riferire ({@code idVersamento} resta
+	 * {@code null}), {@code idApplicazione} risolta dal dominio dal chiamante ({@code
+	 * PaSendRTService}, via {@code ApplicazioneDominioResolver} — {@code null} se non
+	 * risolvibile, non e' un fault). {@code codStazione} e' quella AUTENTICATA della
+	 * richiesta corrente, non quella di default del dominio come in {@link #ricostruisci}:
+	 * non c'e' nessuna pendenza/dominio a cui era gia' agganciata una stazione, e in
+	 * broadcast la ricevuta puo' arrivare legittimamente da una stazione diversa da quella
+	 * di default. Nessun {@code modelloPagamento}: non si applica nessun modello di
+	 * pagamento, non essendoci stata nessuna attivazione di alcun tipo.
+	 *
+	 * <p>{@code GenerationType.IDENTITY} su {@link Rpt#getId()}: {@code rptRepository.save}
+	 * esegue l'insert immediatamente, non al commit — una violazione del vincolo unique
+	 * {@code (iuv, ccp, cod_dominio)} (due ricevute concorrenti con lo stesso {@code
+	 * receiptId} su questo stesso IUV sconosciuto) emerge quindi qui, non a un commit
+	 * successivo: il chiamante la cattura e la traduce in {@code PAA_RECEIPT_DUPLICATA}.</p>
+	 */
+	@Transactional
+	public Rpt creaOrfana(String codDominio, String iuv, String codStazione, Long idApplicazione, String versione,
+			String receiptId, OffsetDateTime dataPagamento) {
+		OffsetDateTime adesso = OffsetDateTime.now(clock);
+		Rpt rpt = new Rpt();
+		rpt.setIdApplicazione(idApplicazione);
+		rpt.setIuv(iuv);
+		rpt.setIur(receiptId);
+		rpt.setCodDominio(codDominio);
+		rpt.setCodStazione(codStazione);
+		rpt.setCodMsgRichiesta(receiptId);
+		rpt.setVersione(versione);
+		rpt.setStato(StatoRpt.RPT_ACCETTATA_NODO.name());
+		rpt.setDataMsgRichiesta(dataPagamento != null ? dataPagamento : adesso);
+		rpt.setDataAggiornamentoStato(adesso);
+		return rptRepository.save(rpt);
+	}
+
+	/**
 	 * Rilegge il {@code CtPaymentPA} dall'XML conservato su {@link Rpt#getXmlRpt()} — una RPT
 	 * scritta dal vecchio core prima del passaggio alla 3.11 (vedi Javadoc di classe).
 	 */

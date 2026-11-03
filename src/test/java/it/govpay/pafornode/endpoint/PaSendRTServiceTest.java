@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -14,6 +15,7 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
@@ -23,6 +25,7 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtSubject;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Request;
 import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.entity.StazioneEntity;
@@ -32,6 +35,7 @@ import it.govpay.common.repository.StazioneRepository;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.rpt.RptAttivazioneService;
+import it.govpay.pafornode.verifica.ApplicazioneDominioResolver;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.repository.PendenzaRepository;
@@ -61,10 +65,11 @@ class PaSendRTServiceTest {
 	private final RptRepository rptRepository = mock(RptRepository.class);
 	private final RptAttivazioneService rptAttivazioneService = mock(RptAttivazioneService.class);
 	private final AcquisizioneRicevutaService acquisizioneRicevutaService = mock(AcquisizioneRicevutaService.class);
+	private final ApplicazioneDominioResolver applicazioneDominioResolver = mock(ApplicazioneDominioResolver.class);
 
 	private final PaSendRTService service = new PaSendRTService(intermediarioRepository, stazioneRepository,
 			dominioRepository, pendenzaRepository, rptRepository, rptAttivazioneService,
-			acquisizioneRicevutaService, Clock.systemDefaultZone());
+			acquisizioneRicevutaService, applicazioneDominioResolver, Clock.systemDefaultZone());
 
 	@AfterEach
 	void pulisciContestoSicurezza() {
@@ -123,14 +128,77 @@ class PaSendRTServiceTest {
 				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_STAZIONE_INT_ERRATA);
 	}
 
+	/**
+	 * Issue #6: una pendenza assente non e' piu' un fault — risposta OK, nessuna pendenza
+	 * creata, {@code idApplicazione} risolta dal dominio e passata a {@code creaOrfana}.
+	 */
 	@Test
-	void rifiutaSePendenzaSconosciuta() {
+	void accettaLaRicevutaSenzaPendenzaRisolvendoLApplicazioneDalDominio() {
 		mockAutorizzazioneOk();
 		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.empty());
+		when(rptRepository.findByCodDominioAndIuvAndIur(COD_DOMINIO, IUV, "receipt-1")).thenReturn(Optional.empty());
+		ApplicazioneEntity applicazione = ApplicazioneEntity.builder().id(42L).build();
+		when(applicazioneDominioResolver.risolvi(any(), eq(IUV))).thenReturn(Optional.of(applicazione));
+		Rpt rptOrfana = new Rpt();
+		when(rptAttivazioneService.creaOrfana(eq(COD_DOMINIO), eq(IUV), eq("STAZIONE-TEST"), eq(42L),
+				eq(RptAttivazioneService.VERSIONE_SANP_240), eq("receipt-1"), any())).thenReturn(rptOrfana);
+
+		var risposta = service.eseguiSendRT(richiesta("receipt-1"));
+
+		assertThat(risposta.getOutcome()).isEqualTo(StOutcome.OK);
+		verify(acquisizioneRicevutaService).acquisisciSenzaPendenza(eq(rptOrfana), any(DatiRicevutaPagamento.class));
+	}
+
+	/** Come sopra, ma nessuna applicazione risolvibile: nessun fault, {@code idApplicazione} nullo. */
+	@Test
+	void accettaLaRicevutaSenzaPendenzaENessunaApplicazioneRisolvibile() {
+		mockAutorizzazioneOk();
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.empty());
+		when(rptRepository.findByCodDominioAndIuvAndIur(COD_DOMINIO, IUV, "receipt-1")).thenReturn(Optional.empty());
+		when(applicazioneDominioResolver.risolvi(any(), eq(IUV))).thenReturn(Optional.empty());
+		Rpt rptOrfana = new Rpt();
+		when(rptAttivazioneService.creaOrfana(eq(COD_DOMINIO), eq(IUV), eq("STAZIONE-TEST"), isNull(),
+				eq(RptAttivazioneService.VERSIONE_SANP_240), eq("receipt-1"), any())).thenReturn(rptOrfana);
+
+		var risposta = service.eseguiSendRT(richiesta("receipt-1"));
+
+		assertThat(risposta.getOutcome()).isEqualTo(StOutcome.OK);
+		verify(acquisizioneRicevutaService).acquisisciSenzaPendenza(eq(rptOrfana), any(DatiRicevutaPagamento.class));
+	}
+
+	/** Idempotenza: lo stesso receiptId e' gia' stato acquisito per questo IUV sconosciuto. */
+	@Test
+	void rifiutaConReceiptDuplicataSenzaPendenzaSeGiaAcquisita() {
+		mockAutorizzazioneOk();
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.empty());
+		when(rptRepository.findByCodDominioAndIuvAndIur(COD_DOMINIO, IUV, "receipt-1"))
+				.thenReturn(Optional.of(new Rpt()));
 
 		assertThatThrownBy(() -> service.eseguiSendRT(richiesta("receipt-1")))
 				.isInstanceOf(NdpException.class)
-				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RPT_SCONOSCIUTA);
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RECEIPT_DUPLICATA);
+		verify(rptAttivazioneService, never()).creaOrfana(any(), any(), any(), any(), any(), any(), any());
+	}
+
+	/**
+	 * Race genuina fra due ricevute concorrenti con lo stesso {@code receiptId} sullo
+	 * stesso IUV sconosciuto: la lettura preventiva non la intercetta (entrambe la superano
+	 * prima dell'insert), ma la violazione del vincolo unique fisico — qui simulata —
+	 * si traduce in {@code PAA_RECEIPT_DUPLICATA}, non in un errore generico.
+	 */
+	@Test
+	void rifiutaConReceiptDuplicataSenzaPendenzaSuViolazioneDelVincoloUnique() {
+		mockAutorizzazioneOk();
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.empty());
+		when(rptRepository.findByCodDominioAndIuvAndIur(COD_DOMINIO, IUV, "receipt-1")).thenReturn(Optional.empty());
+		when(applicazioneDominioResolver.risolvi(any(), eq(IUV))).thenReturn(Optional.empty());
+		when(rptAttivazioneService.creaOrfana(any(), any(), any(), any(), any(), any(), any()))
+				.thenThrow(new DataIntegrityViolationException("unique_rpt_id_transazione"));
+
+		assertThatThrownBy(() -> service.eseguiSendRT(richiesta("receipt-1")))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RECEIPT_DUPLICATA);
+		verify(acquisizioneRicevutaService, never()).acquisisciSenzaPendenza(any(), any());
 	}
 
 	@Test

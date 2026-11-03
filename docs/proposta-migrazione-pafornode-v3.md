@@ -1268,6 +1268,57 @@ dell'elenco di avanzamento, non ripetuto qui):
   risolti dalla stazione di default del dominio, non da un identificativo fornito dal
   chiamante — `DominioEntity#getStazione()`.
 
+## 3vicies. Issue #6 ("registrazione della transazione solo alla ricezione della ricevuta",
+stazione in broadcast): Fasi 2-4 implementate (2026-11-03)
+
+Issue: https://github.com/link-it/govpay-pafornode-api/issues/6. Obiettivo: non salvare più
+`rpt` all'attivazione (`paGetPayment`/`paGetPaymentV2`), per supportare la stazione abilitata
+in broadcast (ricevute per transazioni non iniziate su GovPay) — la riga `rpt` nasce solo
+all'arrivo della ricevuta, come già nel percorso StandIn del core (§3undecies), ma reso
+l'UNICO percorso, con lock sulla pendenza e gestione dei duplicati già presenti, più la novità
+di questa issue: la gestione della pendenza del tutto assente. La Fase 1 dell'issue (base
+dati nel microservizio) era già presente da una migrazione precedente, non rifatta qui.
+
+**Fase 2** (`govpay-common-pendenze`): `Rpt.idVersamento` reso nullable; nuovo campo
+`Rpt.idApplicazione` (FK piatta come `idVersamento`, popolata SOLO per una ricevuta senza
+pendenza, risolta dal dominio — non dalla pendenza, che non esiste). Nessun impatto sulle
+ricerche v2/v3 esistenti: l'inner join con `Pendenza` di `RptRepository#cercaFiltrate`
+continua a escludere naturalmente le righe orfane (nessun `idA2A`/`idPendenza` su cui
+esporle).
+
+**Fase 3** (attivazione): `PaGetPaymentActivationService`/`V2` non scrivono più nessuna
+`Rpt` né notifica ATTIVAZIONE — l'attivazione è ora una sola lettura della pendenza (più
+l'attualizzazione esistente), la risposta usa il `CtPaymentPA`/`V2` costruito in memoria,
+senza più rileggerlo da una riga persistita. `RptAttivazioneService.attiva`/`attivaV2`/
+`nuovaRptAttivata`/`annullaPendenti`/`serializza`/`serializzaV2` rimossi (morti dopo questo
+cambio); `ricostruisci` resta l'unico modo in cui nasce una RPT da questo servizio.
+`NotificaAttivazioneService.accoda` (ATTIVAZIONE) rimosso, resta solo `accodaRicevuta`. Le
+RPT scritte dal vecchio core prima del passaggio alla 3.11 (con `xmlRpt`) restano gestibili
+senza modifiche: `deserializzaDati`/`V2`/`rifiutaPerValidazioneSemantica` non toccati — una
+loro ricevuta, se arriva dopo il passaggio, va comunque aggiornata (non duplicata).
+
+**Fase 4** (`paSendRT`/`paSendRTV2`, pendenza assente): `PaSendRTService` non lancia più
+`PAA_RPT_SCONOSCIUTA` per una pendenza inesistente — risolve l'applicazione con
+`ApplicazioneDominioResolver` (pura lettura locale: nessuna chiamata a `VerificaClient` né
+creazione di una pendenza fittizia, vincolo esplicito dell'issue), controlla l'idempotenza
+sul `receiptId` e crea solo `rpt` (`RptAttivazioneService#creaOrfana`, `idVersamento` nullo,
+`codStazione` quella AUTENTICATA della richiesta corrente, non quella di default del dominio
+come in `ricostruisci`) e `pagamenti` (`AcquisizioneRicevutaService#acquisisciSenzaPendenza`).
+La violazione del vincolo unique `(iuv, ccp, cod_dominio)` — due ricevute concorrenti con lo
+stesso `receiptId` su uno IUV sconosciuto — è tradotta esplicitamente in
+`PAA_RECEIPT_DUPLICATA` (`DataIntegrityViolationException` catturata subito dopo l'insert,
+immediato per `GenerationType.IDENTITY`), non lasciata propagare come `PAA_SYSTEM_ERROR`
+generico — a differenza del precedente comportamento del progetto per le collisioni
+sull'attivazione (ora comunque non più possibili, essendo sparita la scrittura stessa).
+
+Decisione presa durante l'implementazione, **non ancora definitiva — vedi punto aperto #22**:
+nessuna notifica EC (RICEVUTA) per una ricevuta senza pendenza, anche quando
+`ApplicazioneDominioResolver` risolve un'applicazione.
+
+Fuori perimetro di queste tre fasi: Fase 5 (changelog/README/note di rilascio — README
+aggiornato separatamente), cancellazione di eventuali RPT pregresse senza ricevuta
+(esplicitamente escluso dall'issue), modello 1/WISP e `paaInviaRT`.
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -1429,3 +1480,9 @@ dell'elenco di avanzamento, non ripetuto qui):
     rappresentazione dell'aggregato esposta via API), se e quando sarà ancora possibile
     introdurre un livello di detaglio per voce in un'evoluzione di questa API o del modello —
     non deciso, nessuna direzione di design ancora presa.
+22. **Notifica EC "RICEVUTA" per una ricevuta senza pendenza** (issue #6, §3vicies,
+    2026-11-03): nel percorso senza pendenza nessuna notifica viene accodata, anche quando
+    `ApplicazioneDominioResolver` risolve un'applicazione — scelta fatta durante
+    l'implementazione per coerenza con "nessuna pendenza fittizia" (nessuna applicazione ha
+    davvero avviato questa transazione tramite GovPay). Segnalato successivamente come da
+    riconfermare, non una decisione definitiva: va rivista prima del rilascio.

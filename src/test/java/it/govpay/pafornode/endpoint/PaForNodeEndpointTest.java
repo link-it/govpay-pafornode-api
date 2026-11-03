@@ -774,15 +774,66 @@ class PaForNodeEndpointTest {
 				identificativi.iuv())).isTrue();
 	}
 
+	/**
+	 * Caso aggiunto dall'issue #6 (stazione in broadcast): una ricevuta per uno IUV che
+	 * GovPay non conosce affatto non e' piu' un fault — risposta OK al Nodo, salvata solo
+	 * la riga {@code rpt} ({@code id_versamento} nullo) e il {@code pagamento}
+	 * corrispondente; nessuna riga {@code versamenti}/{@code singoli_versamenti} viene
+	 * creata (nessuna pendenza fittizia, verificato sui conteggi prima/dopo).
+	 */
 	@Test
-	void paSendRTRestituisceFaultPerRptSconosciuta() {
-		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999996L);
+	void paSendRTAccettaUnaRicevutaPerUnoIuvSconosciutoSenzaCrearePendenza() {
+		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null, 999996L);
+		int versamentiPrima = jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class);
+		int singoliVersamentiPrima = jdbcTemplate.queryForObject("select count(*) from singoli_versamenti",
+				Integer.class);
 
 		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				"receipt-sconosciuta", COD_DOMINIO, identificativiNonUsati.iuv(), 16.00, 1, 16.00));
+				"receipt-sconosciuta", COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RPT_SCONOSCIUTA</faultCode>");
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select id_versamento from rpt where iuv = ? and ccp = ?", Long.class,
+				identificativi.iuv(), "receipt-sconosciuta")).isNull();
+		assertThat(jdbcTemplate.queryForObject("select count(*) from pagamenti where iuv = ? and iur = ?",
+				Integer.class, identificativi.iuv(), "receipt-sconosciuta")).isEqualTo(1);
+		assertThat(jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class))
+				.isEqualTo(versamentiPrima);
+		assertThat(jdbcTemplate.queryForObject("select count(*) from singoli_versamenti", Integer.class))
+				.isEqualTo(singoliVersamentiPrima);
+	}
+
+	/** Come sopra, per {@code paSendRTV2}. */
+	@Test
+	void paSendRTV2AccettaUnaRicevutaPerUnoIuvSconosciutoSenzaCrearePendenza() {
+		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null, 999995L);
+		int versamentiPrima = jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class);
+
+		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-sconosciuta-v2", COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select id_versamento from rpt where iuv = ? and ccp = ?", Long.class,
+				identificativi.iuv(), "receipt-sconosciuta-v2")).isNull();
+		assertThat(jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class))
+				.isEqualTo(versamentiPrima);
+	}
+
+	/** Idempotenza sul percorso senza pendenza: lo stesso receiptId va in {@code PAA_RECEIPT_DUPLICATA}. */
+	@Test
+	void paSendRTRestituisceReceiptDuplicataSuUnoIuvSconosciutoGiaAcquisito() {
+		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null, 999994L);
+		String richiesta = envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, "receipt-sconosciuta-dup",
+				COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00);
+
+		ResponseEntity<String> prima = invia(richiesta);
+		assertThat(prima.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> seconda = invia(richiesta);
+
+		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(seconda.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RECEIPT_DUPLICATA</faultCode>");
 	}
 
 	/**

@@ -1172,6 +1172,102 @@ nell'implementazione** — in due round, il secondo scoperto solo su CI:
    usato da tutti e 3 i test che leggono eventi GDE in questo file. 171/171 test verdi in
    govpay-pafornode-api (+4 rispetto a prima), stabile su esecuzioni locali ripetute.
 
+## 3novodecies. Issue #4 ("Payment Options for Organizations"): fonti pagoPA consultate e decisioni risultanti (2026-11-03)
+
+Issue: https://github.com/link-it/govpay-pafornode-api/issues/4 — esporre, come Ente
+Creditore, `getPaymentOptionsByNoticeNumber` (`POST /payment-options/organizations/
+{organization-fiscal-code}/notices/{notice-number}`). A differenza delle altre sezioni di
+questo documento (basate sulla lettura del legacy), qui le fonti sono esterne — la spec e la
+documentazione pubblica pagoPA — ed e' la prima volta che questo documento le cita con URL
+espliciti, su richiesta del committente dopo l'implementazione.
+
+**Fonti, nell'ordine in cui sono state consultate, con cosa hanno effettivamente detto:**
+
+1. **Spec OpenAPI**, https://github.com/pagopa/pagopa-api/blob/master/openapi/orgs_payment_options.json
+   (`master`, `info.version` già `0.7.0` — la versione richiesta dall'issue, nessun checkout
+   di un tag diverso necessario). Unica fonte strutturata: endpoint, path/parametri (solo
+   `notice-number`/`organization-fiscal-code`, **nessun campo per intermediario/stazione**, a
+   differenza del contratto SOAP), schema `PaymentOptionsResponse`/`PaymentOption`/
+   `Installment`/`ErrorResponse`, enum `EnumPo`/`EnumInstallment` (solo l'elenco dei valori,
+   **nessuna descrizione del significato di ciascuno**), tabella ODP-101…111 → PAA_* → HTTP
+   status (nella `description` dell'`info`, non in un punto strutturato separato).
+
+2. **Pagina "Opzioni di pagamento" lato Ente Creditore**,
+   https://developer.pagopa.it/pago-pa/guides/sanp/ente-creditore/opzioni-di-pagamento —
+   prima lettura (tramite fetch della pagina resa, non del markdown sorgente): a cosa serve il
+   servizio in generale, l'endpoint REST, il flag "new verify" lato stazione. **Non diceva
+   nulla** sul significato degli enum di stato né su quali opzioni includere in risposta —
+   constatato alla prima lettura, poi il committente ha chiesto di verificare meglio (vedi
+   punto 5).
+
+3. **Pagina "Opzioni di pagamento" lato PSP** (il chiamante),
+   https://developer.pagopa.it/pago-pa/guides/sanp/prestatore-di-servizi-di-pagamento/opzioni-di-pagamento
+   — stessa lettura superficiale iniziale: solo l'endpoint (`GET .../notices/{notice-number}
+   ?idPsp={idPsp}`) e il comportamento del flag "new verify" lato PSP. Il committente ha
+   chiesto esplicitamente di rileggerla con più attenzione.
+
+4. **Markdown sorgente della stessa pagina PSP**, recuperato NON dalla pagina (un'app Next.js
+   lato client, il cui HTML iniziale non contiene il testo — solo stringhe di i18n dell'UI di
+   login/registrazione) ma dal CDN dei contenuti GitBook che la alimenta:
+   `https://static-contents.developer.pagopa.it/it/devportal-docs/docs/pago-pa/sanp/3.12.0/prestatore-di-servizi-di-pagamento/opzioni-di-pagamento/README.md`
+   (pattern scoperto per tentativi: `<path-della-pagina>/README.md` o `<path>.md` sotto quel
+   prefisso restituisce il markdown vero, `200`). Confermava solo quanto già letto (la pagina
+   "primitive REST" a cui rimanda e' solo un indice che punta al riferimento Swagger generato
+   dalla spec, nessun contenuto proprio) — ma ha rivelato lo stesso meccanismo di recupero
+   usato poi per le sei pagine "casi d'uso" (punto 5), quelle davvero decisive.
+
+5. **Sei pagine "casi d'uso" lato Ente Creditore** (stesso meccanismo di recupero del
+   markdown sorgente), tutte sotto
+   `.../ente-creditore/opzioni-di-pagamento/casi-duso/<nome-caso>.md`:
+   - unica-opzione-totale
+   - piu-opzioni-di-pagamento-con-scadenze-differenti
+   - unico-piano-rateale
+   - opzione-totale-e-piano-rateale-unico
+   - opzione-con-molteplici-piani-rateali-con-o-senza-opzione-totale
+   - co-obbligati-in-solido
+
+   Queste hanno dato le uniche informazioni davvero decisive, assenti da tutto il resto:
+   - *"opzione-con-molteplici-piani-rateali..."*: **"La scelta di una OdP... disabilita le OdP
+     relative agli altri piani e/o l'eventuale opzione unica; in output deve essere
+     restituita soltanto l'OdP con le installment ancora da saldare."** — questa frase, non
+     la spec, e' la base della decisione "il NAV individua solo la posizione, la risposta
+     contiene tutte le opzioni DISPONIBILE/ATTIVATA, le ANNULLATA sono escluse".
+   - *"opzione-totale-e-piano-rateale-unico"*/*"piu-opzioni-di-pagamento..."*: stessa regola,
+     con il linguaggio complementare — l'opzione scartata "**risulta non più pagabile**"
+     (confermando concettualmente che corrisponde allo stato `ANNULLATA` di questa libreria,
+     anche se il termine pagoPA non compare mai).
+   - *"co-obbligati-in-solido"*: **"L'ente creditore dovrà restituire in output soltanto le
+     Opzioni di Pagamento del debitore intestatario del NAV utilizzato dal chiamante"** — non
+     applicabile oggi: `OpzionePagamento` non ha un riferimento diretto al singolo debitore in
+     questa libreria, quindi la correlazione "stesso NAV → stessa posizione" già rispetta il
+     vincolo per costruzione, nessuna azione.
+   - Nessuna delle sei, né nessun'altra fonte trovata, **definisce il significato di
+     `PO_EXPIRED_NOT_PAYABLE`/`POI_EXPIRED_NOT_PAYABLE` vs. le varianti `*_UNPAID`**, né
+     tratta un pagamento parziale di una singola rata (solo `PO_PARTIALLY_PAID` a livello di
+     opzione, per un piano rateale con rate miste). Confermato esplicitamente al committente
+     come assenza di fonte, non dedotto — e non a caso: il committente ha poi chiarito che
+     `PARZIALMENTE_ESEGUITO` nasce da un pagamento parziale a livello di VOCE (non di
+     NAV/installment, che in pagoPA e' sempre atomico), un dettaglio che la spec pagoPA non
+     potrebbe comunque rappresentare con l'`Installment` attuale — vedi punto aperto #21.
+
+**Decisioni risultanti e dove sono implementate** (dettaglio completo del codice nel punto 23
+dell'elenco di avanzamento, non ripetuto qui):
+
+- Risposta = tutte le `OpzionePagamento` `DISPONIBILE`/`ATTIVATA` della posizione del NAV
+  richiesto, **incluso quando il NAV richiesto stesso è già pagato o appartiene a un'opzione
+  annullata** — `GetPaymentOptionsService#eseguiGetPaymentOptions`. La prima versione
+  applicava un controllo di pagabilità sulla pendenza specifica PRIMA di elencare le sorelle
+  (bloccando erroneamente con 409 anche quando un'alternativa era ancora valida): corretto
+  dopo che il proprio test di integrazione lo ha fatto fallire, non su segnalazione esterna.
+- `EnumPo`/`EnumInstallment`: mappatura in `OpzionePagamentoResponseMapper`, con
+  `*_EXPIRED_NOT_PAYABLE` mai prodotto (si applicherebbe solo a un'opzione annullata, già
+  esclusa dalla risposta) e `PARZIALMENTE_ESEGUITO`→`POI_UNPAID` segnato esplicitamente come
+  provvisorio — nessuna fonte pagoPA lo copre, e il motivo e' ormai chiaro (vedi punto aperto
+  #21): rappresenta un pagamento parziale a livello di voce, non di NAV/installment.
+- Nessun campo intermediario/stazione nella richiesta REST (confermato dalla spec, punto 1):
+  risolti dalla stazione di default del dominio, non da un identificativo fornito dal
+  chiamante — `DominioEntity#getStazione()`.
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -1321,3 +1417,15 @@ nell'implementazione** — in due round, il secondo scoperto solo su CI:
     trasferimenti gia' `INCASSATO`, nessun `Pagamento` nuovo, `irregolare` restava falso) —
     corretto catturando lo stato pregresso della pendenza e forzando `anomalo=true`
     indipendentemente da `irregolare`, stessa condizione del legacy.
+21. **Pendenza `PARZIALMENTE_ESEGUITO` e la questione allegati** (segnalato dal committente,
+    2026-11-03): `PARZIALMENTE_ESEGUITO` nasce nel legacy dall'acquisizione di una ricevuta
+    che paga solo ALCUNE delle voci (`VocePendenza`/`singoli_versamenti`) della pendenza, non
+    tutte — un pagamento parziale a livello di VOCE, non di NAV/installment (che in pagoPA
+    resta sempre atomico: un IUV si paga per intero o niente). La mappatura provvisoria
+    `PARZIALMENTE_ESEGUITO`→`POI_UNPAID` decisa in §3novodecies per
+    `getPaymentOptionsByNoticeNumber` non rappresenta questo dettaglio — l'`Installment` del
+    contratto pagoPA non ha granularità di voce, solo di NAV. Da affrontare insieme alla
+    questione degli allegati (dati legati alle singole voci, oggi fuori da qualunque
+    rappresentazione dell'aggregato esposta via API), se e quando sarà ancora possibile
+    introdurre un livello di detaglio per voce in un'evoluzione di questa API o del modello —
+    non deciso, nessuna direzione di design ancora presa.

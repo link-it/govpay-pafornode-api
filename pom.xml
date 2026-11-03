@@ -228,6 +228,18 @@
 			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
 
+		<!-- Stub server REST per orgs_payment_options.json (issue #4), stesso schema di
+		     govpay-pendenze-api: SpringDoc per le annotazioni generate, Jackson Databind
+		     Nullable per i wrapper JsonNullable del plugin OpenAPI Generator. -->
+		<dependency>
+			<groupId>org.springdoc</groupId>
+			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.openapitools</groupId>
+			<artifactId>jackson-databind-nullable</artifactId>
+		</dependency>
+
 		<!-- Binding JAXB delle classi generate da paForNode.xsd -->
 		<dependency>
 			<groupId>jakarta.xml.bind</groupId>
@@ -370,6 +382,41 @@
 							<sources>
 								<source>${project.basedir}/src/main/resources/xsd/paForNode.xsd</source>
 							</sources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- OpenAPI Generator Maven Plugin: stub server per orgs_payment_options.json
+			     (issue #4, "pagoPA Payment Options for Organizations") — stesso schema di
+			     govpay-pendenze-api (interfaceOnly, Spring Boot 3, Jakarta EE). -->
+			<plugin>
+				<groupId>org.openapitools</groupId>
+				<artifactId>openapi-generator-maven-plugin</artifactId>
+				<version>${openapi.tool.codegen.version}</version>
+				<executions>
+					<execution>
+						<id>generate-orgs-payment-options</id>
+						<goals>
+							<goal>generate</goal>
+						</goals>
+						<configuration>
+							<inputSpec>${project.basedir}/src/main/resources/openapi/orgs_payment_options.json</inputSpec>
+							<generatorName>spring</generatorName>
+							<apiPackage>it.govpay.pafornode.odp.api.rest</apiPackage>
+							<modelPackage>it.govpay.pafornode.odp.api.model</modelPackage>
+							<invokerPackage>it.govpay.pafornode.odp.api</invokerPackage>
+							<output>${project.build.directory}/generated-sources/openapi-odp</output>
+							<configOptions>
+								<interfaceOnly>true</interfaceOnly>
+								<useSpringBoot3>true</useSpringBoot3>
+								<useJakartaEe>true</useJakartaEe>
+								<useTags>true</useTags>
+								<skipDefaultInterface>false</skipDefaultInterface>
+								<openApiNullable>true</openApiNullable>
+								<documentationProvider>springdoc</documentationProvider>
+								<serializableModel>true</serializableModel>
+							</configOptions>
 						</configuration>
 					</execution>
 				</executions>

@@ -728,11 +728,16 @@ CREATE TABLE IF NOT EXISTS rpt
 	cod_transazione_rpt VARCHAR(36),
 	-- fk/pk columns
 	id BIGINT DEFAULT nextval('seq_rpt') NOT NULL,
-	id_versamento BIGINT NOT NULL,
+	-- Nullable dall'issue #6/govpay-pafornode-api: una ricevuta senza pendenza (stazione in
+	-- broadcast) viene comunque salvata. id_applicazione e' popolata solo in quel caso (vedi
+	-- Javadoc di classe di Rpt in govpay-common-pendenze).
+	id_versamento BIGINT,
+	id_applicazione BIGINT,
 	-- unique constraints
 	CONSTRAINT unique_rpt_id_transazione UNIQUE (iuv, ccp, cod_dominio),
 	-- fk/pk keys constraints
 	CONSTRAINT fk_rpt_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
+	CONSTRAINT fk_rpt_id_applicazione FOREIGN KEY (id_applicazione) REFERENCES applicazioni(id),
 	CONSTRAINT pk_rpt PRIMARY KEY (id)
 );
 

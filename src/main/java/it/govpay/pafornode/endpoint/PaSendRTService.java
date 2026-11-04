@@ -16,6 +16,7 @@ import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Marshaller;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +32,7 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Request;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Response;
 import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.repository.DominioRepository;
@@ -40,6 +42,7 @@ import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.rpt.RptAttivazioneService;
 import it.govpay.pafornode.rpt.StatoRpt;
+import it.govpay.pafornode.verifica.ApplicazioneDominioResolver;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.repository.PendenzaRepository;
@@ -117,6 +120,7 @@ public class PaSendRTService {
 	private final RptRepository rptRepository;
 	private final RptAttivazioneService rptAttivazioneService;
 	private final AcquisizioneRicevutaService acquisizioneRicevutaService;
+	private final ApplicazioneDominioResolver applicazioneDominioResolver;
 	private final Clock clock;
 	private final ObjectFactory objectFactory = new ObjectFactory();
 	private final JAXBContext jaxbContext;
@@ -125,7 +129,7 @@ public class PaSendRTService {
 	public PaSendRTService(IntermediarioRepository intermediarioRepository, StazioneRepository stazioneRepository,
 			DominioRepository dominioRepository, PendenzaRepository pendenzaRepository, RptRepository rptRepository,
 			RptAttivazioneService rptAttivazioneService, AcquisizioneRicevutaService acquisizioneRicevutaService,
-			Clock clock) {
+			ApplicazioneDominioResolver applicazioneDominioResolver, Clock clock) {
 		this.intermediarioRepository = intermediarioRepository;
 		this.stazioneRepository = stazioneRepository;
 		this.dominioRepository = dominioRepository;
@@ -133,6 +137,7 @@ public class PaSendRTService {
 		this.rptRepository = rptRepository;
 		this.rptAttivazioneService = rptAttivazioneService;
 		this.acquisizioneRicevutaService = acquisizioneRicevutaService;
+		this.applicazioneDominioResolver = applicazioneDominioResolver;
 		this.clock = clock;
 		try {
 			this.jaxbContext = JAXBContext.newInstance(PaSendRTReq.class);
@@ -159,11 +164,25 @@ public class PaSendRTService {
 		String iuv = receipt.getCreditorReferenceId();
 
 		DominioEntity dominio = verificaAutorizzazione(request.getIdBrokerPA(), request.getIdStation(), codDominio);
-		Pendenza pendenza = trovaEBloccaPendenza(dominio.getId(), iuv, codDominio);
 		OffsetDateTime dataPagamento = convertiData(receipt.getPaymentDateTime());
+		byte[] xmlRt = serializza(request);
+		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
+				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
+				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
+				xmlRt, trasferimentiV1(receipt));
+
+		Optional<Pendenza> pendenzaEsistente = trovaEBloccaPendenza(dominio.getId(), iuv);
+		if (pendenzaEsistente.isEmpty()) {
+			gestisciRicevutaSenzaPendenza(dominio, request.getIdStation(), iuv, RptAttivazioneService.VERSIONE_SANP_240,
+					dati, codDominio);
+			PaSendRTRes response = new PaSendRTRes();
+			response.setOutcome(StOutcome.OK);
+			return response;
+		}
+		Pendenza pendenza = pendenzaEsistente.get();
+
 		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
 				RptAttivazioneService.VERSIONE_SANP_240, true, codDominio);
-		byte[] xmlRt = serializza(request);
 
 		if (rpt.getXmlRpt() != null) {
 			try {
@@ -183,10 +202,6 @@ public class PaSendRTService {
 			}
 		}
 
-		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
-				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
-				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
-				xmlRt, trasferimentiV1(receipt));
 		acquisizioneRicevutaService.acquisisci(pendenza, rpt, dati);
 
 		PaSendRTRes response = new PaSendRTRes();
@@ -202,11 +217,25 @@ public class PaSendRTService {
 		String iuv = receipt.getCreditorReferenceId();
 
 		DominioEntity dominio = verificaAutorizzazione(request.getIdBrokerPA(), request.getIdStation(), codDominio);
-		Pendenza pendenza = trovaEBloccaPendenza(dominio.getId(), iuv, codDominio);
 		OffsetDateTime dataPagamento = convertiData(receipt.getPaymentDateTime());
+		byte[] xmlRt = serializzaV2(request);
+		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
+				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
+				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
+				xmlRt, trasferimentiV2(receipt));
+
+		Optional<Pendenza> pendenzaEsistente = trovaEBloccaPendenza(dominio.getId(), iuv);
+		if (pendenzaEsistente.isEmpty()) {
+			gestisciRicevutaSenzaPendenza(dominio, request.getIdStation(), iuv,
+					RptAttivazioneService.VERSIONE_SANP_321_V2, dati, codDominio);
+			PaSendRTV2Response response = new PaSendRTV2Response();
+			response.setOutcome(StOutcome.OK);
+			return response;
+		}
+		Pendenza pendenza = pendenzaEsistente.get();
+
 		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
 				RptAttivazioneService.VERSIONE_SANP_321_V2, false, codDominio);
-		byte[] xmlRt = serializzaV2(request);
 
 		if (rpt.getXmlRpt() != null) {
 			try {
@@ -227,10 +256,6 @@ public class PaSendRTService {
 			}
 		}
 
-		DatiRicevutaPagamento dati = estraiDati(receipt.getReceiptId(), receipt.getOutcome() == StOutcome.OK,
-				dataPagamento, receipt.getPaymentAmount(), receipt.getPspFiscalCode(),
-				receipt.getPSPCompanyName(), receipt.getIdPSP(), receipt.getIdChannel(), receipt.getPaymentMethod(),
-				xmlRt, trasferimentiV2(receipt));
 		acquisizioneRicevutaService.acquisisci(pendenza, rpt, dati);
 
 		PaSendRTV2Response response = new PaSendRTV2Response();
@@ -251,11 +276,57 @@ public class PaSendRTService {
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_DOMINIO_ERRATO, codDominio));
 	}
 
-	private Pendenza trovaEBloccaPendenza(Long idDominio, String iuv, String codDominio) {
-		Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(idDominio, iuv)
-				.orElseThrow(() -> new NdpException(FaultPa.PAA_RPT_SCONOSCIUTA, codDominio));
-		return pendenzaRepository.findByIdForUpdate(pendenza.getId())
-				.orElseThrow(() -> new NdpException(FaultPa.PAA_RPT_SCONOSCIUTA, codDominio));
+	/**
+	 * A differenza del passato (issue #6): nessun fault se la pendenza non esiste — una
+	 * pendenza assente e una stazione in broadcast sono casi legittimi, gestiti da
+	 * {@link #gestisciRicevutaSenzaPendenza}. Il lock resta identico per il caso presente
+	 * (serializza le ricevute concorrenti sulla stessa pendenza).
+	 */
+	private Optional<Pendenza> trovaEBloccaPendenza(Long idDominio, String iuv) {
+		return pendenzaRepository.findByIdDominioAndIuv(idDominio, iuv)
+				.flatMap(pendenza -> pendenzaRepository.findByIdForUpdate(pendenza.getId()));
+	}
+
+	/**
+	 * Ricevuta per uno IUV che GovPay non conosce (stazione in broadcast, issue #6):
+	 * nessuna pendenza viene creata (vincolo esplicito dell'issue — niente {@code
+	 * VerificaClient}, niente {@code PosizioneDebitoriaService#crea}), la risposta al Nodo
+	 * resta comunque OK. Si salvano solo {@code rpt} ({@code idVersamento} nullo) e, per
+	 * esito OK, i {@code pagamenti} corrispondenti ({@link
+	 * AcquisizioneRicevutaService#acquisisciSenzaPendenza}).
+	 *
+	 * <p>{@code idApplicazione} risolta dal DOMINIO ({@link ApplicazioneDominioResolver},
+	 * pura lettura locale — non dalla pendenza, che non esiste): se nessuna applicazione
+	 * soddisfa sia l'autorizzazione sul dominio sia il pattern sullo IUV, la riga resta
+	 * senza applicazione — non e' un fault (deciso con l'utente, 2026-11-03). Nessuna
+	 * notifica EC in questo percorso, nemmeno quando l'applicazione si risolve: nessuna
+	 * applicazione ha davvero avviato questa transazione tramite GovPay (stessa decisione).
+	 * </p>
+	 *
+	 * <p><b>Nessuna pendenza da bloccare</b> per serializzare una vera race fra due
+	 * ricevute concorrenti con lo stesso {@code receiptId}: la lettura preventiva (come nel
+	 * percorso con pendenza) copre il caso comune, ma una race genuina viene rilevata solo
+	 * al momento dell'insert, dalla violazione del vincolo unique fisico {@code (iuv, ccp,
+	 * cod_dominio)} — {@code rptRepository.save} con {@code GenerationType.IDENTITY} esegue
+	 * l'insert immediatamente, non al commit, quindi la violazione e' intercettabile qui e
+	 * non propaga come errore generico (decisione esplicita dell'issue).</p>
+	 */
+	private void gestisciRicevutaSenzaPendenza(DominioEntity dominio, String codStazioneRichiesta, String iuv,
+			String versione, DatiRicevutaPagamento dati, String codDominioFault) {
+		if (rptRepository.findByCodDominioAndIuvAndIur(dominio.getCodDominio(), iuv, dati.receiptId()).isPresent()) {
+			throw new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, codDominioFault);
+		}
+		Long idApplicazione = applicazioneDominioResolver.risolvi(dominio, iuv).map(ApplicazioneEntity::getId)
+				.orElse(null);
+
+		Rpt rpt;
+		try {
+			rpt = rptAttivazioneService.creaOrfana(dominio.getCodDominio(), iuv, codStazioneRichiesta, idApplicazione,
+					versione, dati.receiptId(), dati.dataPagamento());
+		} catch (DataIntegrityViolationException e) {
+			throw new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, codDominioFault);
+		}
+		acquisizioneRicevutaService.acquisisciSenzaPendenza(rpt, dati);
 	}
 
 	/**

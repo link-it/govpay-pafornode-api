@@ -8,7 +8,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
-import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.ConnettoreEntity;
 import it.govpay.common.entity.DominioEntity;
@@ -111,51 +110,13 @@ class NotificaAttivazioneServiceTest {
 		dominio.setCodDominio("12345678901");
 		StazioneEntity stazione = new StazioneEntity();
 		stazione.setCodStazione("STAZIONE-TEST");
+		dominio.setStazione(stazione);
 
-		return rptAttivazioneService.attiva(pendenzaPersistita, dominio, stazione, "123456789", new CtPaymentPA());
-	}
-
-	@Test
-	void nonAccodaNullaSeLApplicazioneNonHaUnConnettoreConfigurato() {
-		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
-				.codApplicazione("APP-SENZA-CONNETTORE").autoIuv(true).firmaRicevuta("N").trusted(true).idUtenza(10L)
-				.build());
-		Rpt rpt = rptPersistita(applicazione.getId(), "00000000000000000010");
-
-		service.accoda(pendenzaFittizia(applicazione.getId()), rpt);
-
-		assertThat(notificaRepository.findAll()).isEmpty();
-	}
-
-	@Test
-	void accodaUnaNotificaDiAttivazioneSeIlConnettoreERestUno() {
-		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
-				.codApplicazione("APP-REST1").autoIuv(true).firmaRicevuta("N").trusted(true).idUtenza(11L)
-				.codConnettoreIntegrazione("CONN-REST1").build());
-		connettoreEntityRepository.save(ConnettoreEntity.builder().codConnettore("CONN-REST1").codProprieta("VERSIONE")
-				.valore("REST_1").build());
-		Rpt rpt = rptPersistita(applicazione.getId(), "00000000000000000011");
-
-		service.accoda(pendenzaFittizia(applicazione.getId()), rpt);
-
-		Notifica notifica = notificaRepository.findAll().get(0);
-		assertThat(notifica.getIdApplicazione()).isEqualTo(applicazione.getId());
-		assertThat(notifica.getIdRpt()).isEqualTo(rpt.getId());
-		assertThat(notifica.getTipo()).isEqualTo(TipoNotifica.ATTIVAZIONE);
-	}
-
-	@Test
-	void nonAccodaNullaSeIlConnettoreNonERestUno() {
-		ApplicazioneEntity applicazione = applicazioneRepository.save(ApplicazioneEntity.builder()
-				.codApplicazione("APP-REST2").autoIuv(true).firmaRicevuta("N").trusted(true).idUtenza(12L)
-				.codConnettoreIntegrazione("CONN-REST2").build());
-		connettoreEntityRepository.save(ConnettoreEntity.builder().codConnettore("CONN-REST2").codProprieta("VERSIONE")
-				.valore("REST_2").build());
-		Rpt rpt = rptPersistita(applicazione.getId(), "00000000000000000012");
-
-		service.accoda(pendenzaFittizia(applicazione.getId()), rpt);
-
-		assertThat(notificaRepository.findAll()).isEmpty();
+		// Nessuna attivazione reale (issue #6, non scrive piu' rpt): basta una riga valida
+		// per soddisfare il vincolo FK notifiche.id_rpt -> rpt.id, il contenuto non conta
+		// per questi test.
+		return rptAttivazioneService.ricostruisci(pendenzaPersistita, dominio, RptAttivazioneService.VERSIONE_SANP_240,
+				"receipt-" + iuv, null);
 	}
 
 	@Test
@@ -188,7 +149,6 @@ class NotificaAttivazioneServiceTest {
 	}
 
 	/**
-	 * Differenza chiave con {@link #nonAccodaNullaSeIlConnettoreNonERestUno} (ATTIVAZIONE):
 	 * RICEVUTA si accoda ANCHE su connettore v2 — nessun filtro di versione, vedi Javadoc
 	 * di classe ("la versione V2 delle api client prevede solamente l'invio delle
 	 * notifiche di tipo ricevuta").

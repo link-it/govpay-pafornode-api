@@ -3,15 +3,16 @@ package it.govpay.pafornode.endpoint;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.time.Clock;
-import java.time.Instant;
+import java.io.ByteArrayOutputStream;
 import java.time.OffsetDateTime;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import jakarta.xml.bind.JAXBContext;
+import jakarta.xml.bind.JAXBException;
+import jakarta.xml.bind.Marshaller;
 
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.TransactionDefinition;
@@ -26,11 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -68,6 +65,15 @@ import it.govpay.common.utils.IuvUtils.IdentificativiPagamento;
 import it.govpay.common.gde.GdeEventInfo;
 import it.govpay.gde.client.beans.EsitoEvento;
 import it.govpay.pafornode.gde.PaForNodeGdeService;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
+import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
+import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.govpay.pafornode.rpt.CtPaymentPaBuilder;
+import it.govpay.pafornode.rpt.CtPaymentPaV2Builder;
+import it.govpay.pafornode.rpt.RptAttivazioneService;
 
 /**
  * Verifica {@code paVerifyPaymentNotice} a livello di integrazione (contesto Spring completo,
@@ -83,26 +89,7 @@ import it.govpay.pafornode.gde.PaForNodeGdeService;
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
-@Import(PaForNodeEndpointTest.ClockFissoConfig.class)
 class PaForNodeEndpointTest {
-
-	/**
-	 * Clock fisso: serve solo al test di collisione sulla chiave della RPT (due attivazioni
-	 * con lo stesso {@code ccp}, derivato da {@code clock.millis()}) — innocuo per gli altri
-	 * test di questa classe, nessuno dipende da un orologio che avanza davvero.
-	 */
-	@TestConfiguration
-	static class ClockFissoConfig {
-		// Nome diverso da "clock": Application.clock() resta registrato, @Primary sceglie
-		// comunque questo bean per l'autowiring per tipo — un secondo bean con lo stesso nome
-		// farebbe fallire il contesto (BeanDefinitionOverrideException, non consentito di
-		// default).
-		@Bean
-		@Primary
-		Clock clockFisso() {
-			return Clock.fixed(Instant.now(), ZoneId.systemDefault());
-		}
-	}
 
 	private static final String COD_DOMINIO = "12345678901";
 	private static final String COD_INTERMEDIARIO = "BROKER-TEST";
@@ -144,6 +131,12 @@ class PaForNodeEndpointTest {
 
 	@MockitoBean
 	private PaForNodeGdeService paForNodeGdeService;
+
+	@Autowired
+	private CtPaymentPaBuilder ctPaymentPaBuilder;
+
+	@Autowired
+	private CtPaymentPaV2Builder ctPaymentPaV2Builder;
 
 	private Long idDominio;
 	private Long idApplicazione;
@@ -250,6 +243,81 @@ class PaForNodeEndpointTest {
 
 		posizioneDebitoriaService.crea(DatiPosizioneDebitoria.da(posizione));
 		return identificativi;
+	}
+
+	/**
+	 * Simula una RPT scritta dal vecchio core PRIMA del passaggio alla 3.11 (issue #6):
+	 * questo modulo non scrive piu' nessuna RPT all'attivazione (vedi Javadoc di classe di
+	 * {@code PaGetPaymentActivationService}), quindi non e' piu' possibile ottenerne una con
+	 * {@code xmlRpt} popolato chiamando {@code paGetPayment}/{@code paGetPaymentV2} su questo
+	 * stesso servizio — va persistita a mano, con lo stesso {@code CtPaymentPA}/{@code
+	 * CtPaymentPAV2} che l'attivazione avrebbe costruito, per esercitare davvero la
+	 * validazione semantica RT-contro-RPT in {@code PaSendRTService}.
+	 */
+	private Rpt rptAttivataDalVecchioCoreFixture(IdentificativiPagamento identificativi, String ccp,
+			String versione) {
+		// Tutto nella stessa transazione: CtPaymentPaBuilder/V2 navigano
+		// pendenza.getOpzionePagamento().getPosizioneDebitoria() (relazioni lazy) — fuori da
+		// una sessione Hibernate attiva solleverebbero LazyInitializationException.
+		Rpt[] risultato = new Rpt[1];
+		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+			DominioEntity dominio = dominioRepository.findById(idDominio).orElseThrow();
+			Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(idDominio, identificativi.iuv())
+					.orElseThrow();
+
+			byte[] xmlRpt = versione.equals(RptAttivazioneService.VERSIONE_SANP_240)
+					? serializzaPaGetPaymentRes(ctPaymentPaBuilder.costruisci(pendenza, dominio, null))
+					: serializzaPaGetPaymentV2Response(ctPaymentPaV2Builder.costruisci(pendenza, dominio, null));
+
+			Rpt rpt = new Rpt();
+			rpt.setIdVersamento(pendenza.getId());
+			rpt.setIuv(identificativi.iuv());
+			rpt.setIur(ccp);
+			rpt.setCodDominio(COD_DOMINIO);
+			rpt.setCodStazione(COD_STAZIONE);
+			rpt.setCodMsgRichiesta(ccp);
+			rpt.setVersione(versione);
+			rpt.setStato("RPT_ACCETTATA_NODO");
+			rpt.setModelloPagamento(RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP);
+			rpt.setXmlRpt(xmlRpt);
+			OffsetDateTime adesso = OffsetDateTime.now();
+			rpt.setDataMsgRichiesta(adesso);
+			rpt.setDataAggiornamentoStato(adesso);
+			entityManager.persist(rpt);
+			entityManager.flush();
+			risultato[0] = rpt;
+		});
+		return risultato[0];
+	}
+
+	private byte[] serializzaPaGetPaymentRes(CtPaymentPA ctPayment) {
+		PaGetPaymentRes risposta = new PaGetPaymentRes();
+		risposta.setOutcome(StOutcome.OK);
+		risposta.setData(ctPayment);
+		try {
+			JAXBContext jaxbContext = JAXBContext.newInstance(PaGetPaymentRes.class);
+			Marshaller marshaller = jaxbContext.createMarshaller();
+			ByteArrayOutputStream output = new ByteArrayOutputStream();
+			marshaller.marshal(new ObjectFactory().createPaGetPaymentRes(risposta), output);
+			return output.toByteArray();
+		} catch (JAXBException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	private byte[] serializzaPaGetPaymentV2Response(CtPaymentPAV2 ctPayment) {
+		PaGetPaymentV2Response risposta = new PaGetPaymentV2Response();
+		risposta.setOutcome(StOutcome.OK);
+		risposta.setData(ctPayment);
+		try {
+			JAXBContext jaxbContext = JAXBContext.newInstance(PaGetPaymentV2Response.class);
+			Marshaller marshaller = jaxbContext.createMarshaller();
+			ByteArrayOutputStream output = new ByteArrayOutputStream();
+			marshaller.marshal(new ObjectFactory().createPaGetPaymentV2Response(risposta), output);
+			return output.toByteArray();
+		} catch (JAXBException e) {
+			throw new IllegalStateException(e);
+		}
 	}
 
 	private ResponseEntity<String> invia(String body) {
@@ -436,38 +504,6 @@ class PaForNodeEndpointTest {
 	}
 
 	/**
-	 * Come sopra, per {@code PAA_SYSTEM_ERROR} (percorso del catch generico su un errore
-	 * interno inatteso, non di una {@code NdpException} esplicita come il caso funzionale
-	 * sopra) — stesso scenario reale di {@code
-	 * paGetPaymentSuCollisioneDiChiaveRptRestituisceFaultInveceDiPropagareLerrore}: due
-	 * attivazioni con lo stesso {@code ccp} (clock fisso) collidono sulla chiave fisica della
-	 * RPT al commit della seconda.
-	 *
-	 * <p>Niente {@code clearInvocations} tra le due chiamate: il body della risposta HTTP può
-	 * arrivare al client (quindi a {@code invia()}) PRIMA che il {@code finally} di {@code
-	 * GdeEventFilter} finisca di registrare l'evento sul mock — un {@code clearInvocations}
-	 * tra le due {@code invia()} è quindi una corsa, non una sincronizzazione reale, e lo
-	 * stesso vale per leggere l'elenco delle invocazioni una volta sola subito dopo
-	 * {@code invia()}: va atteso con {@link #attendiEventoGde} (vedi Javadoc).</p>
-	 */
-	@Test
-	void eventoGdeClassificaComeKoUnPaaSystemErrorAncheConHttp200() throws InterruptedException {
-		IdentificativiPagamento identificativi = creaPendenza("doc-gde-system-error", 16.00);
-		String richiesta = envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
-				identificativi.numeroAvviso());
-
-		invia(richiesta);
-		ResponseEntity<String> seconda = invia(richiesta);
-
-		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(seconda.getBody()).contains("<faultCode>PAA_SYSTEM_ERROR</faultCode>");
-
-		GdeEventInfo evento = attendiEventoGde(e -> e.getEsito() == EsitoEvento.KO);
-		assertThat(evento.getStatusCodeRisposta()).isEqualTo(200);
-		assertThat(evento.getDescrizioneEsito()).contains("PAA_SYSTEM_ERROR");
-	}
-
-	/**
 	 * Attende (fino a 2 secondi, poll ogni 20ms) un evento GDE che soddisfi la condizione
 	 * data, invece di leggere l'elenco delle invocazioni del mock una volta sola — il body
 	 * della risposta HTTP può arrivare al client (quindi al chiamante di {@code invia()})
@@ -523,8 +559,12 @@ class PaForNodeEndpointTest {
 		assertThat(risposta.getBody()).contains("<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
 	}
 
+	/**
+	 * Verifica richiesta esplicitamente dall'issue #6: nessuna riga {@code rpt} dopo
+	 * l'attivazione — l'operazione e' diventata una sola lettura della pendenza.
+	 */
 	@Test
-	void paGetPaymentAttivaLaRptERestituisceIDatiDelPagamento() {
+	void paGetPaymentRestituisceIDatiDelPagamentoSenzaScrivereRpt() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-getpayment-1", 16.00);
 
 		ResponseEntity<String> risposta = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
@@ -534,6 +574,8 @@ class PaForNodeEndpointTest {
 		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>",
 				"<creditorReferenceId>" + identificativi.iuv() + "</creditorReferenceId>",
 				"<companyName>Comune di Test</companyName>");
+		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
+				identificativi.iuv())).isZero();
 	}
 
 	@Test
@@ -546,29 +588,6 @@ class PaForNodeEndpointTest {
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>",
 				"<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
-	}
-
-	@Test
-	void paGetPaymentSuCollisioneDiChiaveRptRestituisceFaultInveceDiPropagareLerrore() {
-		// Clock fisso (ClockFissoConfig): le due chiamate derivano lo stesso ccp
-		// (System.millis() congelato), quindi la seconda attivazione collide sulla chiave
-		// fisica (iuv, ccp, cod_dominio) con la RPT appena creata dalla prima — anche se
-		// l'annullamento delle RPT pendenti la marca RPT_ANNULLATA, non le libera la chiave.
-		// Prima della correzione, il commit (fuori dal try/catch perché @Transactional stava
-		// sull'endpoint) faceva arrivare l'errore SQL grezzo al chiamante invece della
-		// risposta applicativa KO/PAA_SYSTEM_ERROR.
-		IdentificativiPagamento identificativi = creaPendenza("doc-getpayment-collisione", 16.00);
-		String richiesta = envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
-				identificativi.numeroAvviso());
-
-		ResponseEntity<String> prima = invia(richiesta);
-		assertThat(prima.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(prima.getBody()).contains("<outcome>OK</outcome>");
-
-		ResponseEntity<String> seconda = invia(richiesta);
-
-		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(seconda.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_SYSTEM_ERROR</faultCode>");
 	}
 
 	@Test
@@ -656,10 +675,10 @@ class PaForNodeEndpointTest {
 	@Test
 	void paSendRTAcquisisceLaRicevutaDopoLattivazione() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-sendrt-1", 16.00);
-
-		ResponseEntity<String> attivazione = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				COD_DOMINIO, identificativi.numeroAvviso()));
-		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+		// RPT con xmlRpt, come l'avrebbe lasciata il vecchio core prima del passaggio alla
+		// 3.11 — questo modulo non ne scrive piu' (issue #6), vedi Javadoc del metodo.
+		rptAttivataDalVecchioCoreFixture(identificativi, "legacy-ccp-" + identificativi.iuv(),
+				RptAttivazioneService.VERSIONE_SANP_240);
 
 		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
 				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
@@ -688,10 +707,8 @@ class PaForNodeEndpointTest {
 	@Test
 	void paSendRTPersisteIlRifiutoDellaValidazioneSemanticaPrimaDelFault() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-semantica-rifiuto", 16.00);
-
-		ResponseEntity<String> attivazione = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				COD_DOMINIO, identificativi.numeroAvviso()));
-		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+		rptAttivataDalVecchioCoreFixture(identificativi, "legacy-ccp-" + identificativi.iuv(),
+				RptAttivazioneService.VERSIONE_SANP_240);
 
 		String receiptId = "receipt-" + identificativi.iuv();
 		String envelopeConDueTrasferimenti = """
@@ -757,15 +774,66 @@ class PaForNodeEndpointTest {
 				identificativi.iuv())).isTrue();
 	}
 
+	/**
+	 * Caso aggiunto dall'issue #6 (stazione in broadcast): una ricevuta per uno IUV che
+	 * GovPay non conosce affatto non e' piu' un fault — risposta OK al Nodo, salvata solo
+	 * la riga {@code rpt} ({@code id_versamento} nullo) e il {@code pagamento}
+	 * corrispondente; nessuna riga {@code versamenti}/{@code singoli_versamenti} viene
+	 * creata (nessuna pendenza fittizia, verificato sui conteggi prima/dopo).
+	 */
 	@Test
-	void paSendRTRestituisceFaultPerRptSconosciuta() {
-		IdentificativiPagamento identificativiNonUsati = IuvUtils.genera(1, "", null, null, 999996L);
+	void paSendRTAccettaUnaRicevutaPerUnoIuvSconosciutoSenzaCrearePendenza() {
+		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null, 999996L);
+		int versamentiPrima = jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class);
+		int singoliVersamentiPrima = jdbcTemplate.queryForObject("select count(*) from singoli_versamenti",
+				Integer.class);
 
 		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				"receipt-sconosciuta", COD_DOMINIO, identificativiNonUsati.iuv(), 16.00, 1, 16.00));
+				"receipt-sconosciuta", COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RPT_SCONOSCIUTA</faultCode>");
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select id_versamento from rpt where iuv = ? and ccp = ?", Long.class,
+				identificativi.iuv(), "receipt-sconosciuta")).isNull();
+		assertThat(jdbcTemplate.queryForObject("select count(*) from pagamenti where iuv = ? and iur = ?",
+				Integer.class, identificativi.iuv(), "receipt-sconosciuta")).isEqualTo(1);
+		assertThat(jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class))
+				.isEqualTo(versamentiPrima);
+		assertThat(jdbcTemplate.queryForObject("select count(*) from singoli_versamenti", Integer.class))
+				.isEqualTo(singoliVersamentiPrima);
+	}
+
+	/** Come sopra, per {@code paSendRTV2}. */
+	@Test
+	void paSendRTV2AccettaUnaRicevutaPerUnoIuvSconosciutoSenzaCrearePendenza() {
+		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null, 999995L);
+		int versamentiPrima = jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class);
+
+		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-sconosciuta-v2", COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select id_versamento from rpt where iuv = ? and ccp = ?", Long.class,
+				identificativi.iuv(), "receipt-sconosciuta-v2")).isNull();
+		assertThat(jdbcTemplate.queryForObject("select count(*) from versamenti", Integer.class))
+				.isEqualTo(versamentiPrima);
+	}
+
+	/** Idempotenza sul percorso senza pendenza: lo stesso receiptId va in {@code PAA_RECEIPT_DUPLICATA}. */
+	@Test
+	void paSendRTRestituisceReceiptDuplicataSuUnoIuvSconosciutoGiaAcquisito() {
+		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null, 999994L);
+		String richiesta = envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, "receipt-sconosciuta-dup",
+				COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00);
+
+		ResponseEntity<String> prima = invia(richiesta);
+		assertThat(prima.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> seconda = invia(richiesta);
+
+		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(seconda.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RECEIPT_DUPLICATA</faultCode>");
 	}
 
 	/**
@@ -944,19 +1012,17 @@ class PaForNodeEndpointTest {
 	}
 
 	/**
-	 * Percorso a lieto fine completo di {@code paSendRTV2} (attivazione con
-	 * {@code paGetPaymentV2}, poi ricevuta con {@code paSendRTV2}): a differenza dei test
-	 * di standin sopra, qui la RPT ha {@code xmlRpt} popolato dall'attivazione, quindi la
+	 * Percorso a lieto fine completo di {@code paSendRTV2} su una RPT con {@code xmlRpt}
+	 * (simulata come dal vecchio core prima del passaggio alla 3.11, vedi Javadoc di
+	 * {@link #rptAttivataDalVecchioCoreFixture}): a differenza dei test di standin sopra, la
 	 * validazione semantica REALE ({@code validaSemanticaV2}, incluso il controllo su
 	 * {@code UniqueIdentifierDebtor} presente solo su V2) viene davvero esercitata.
 	 */
 	@Test
 	void paSendRTV2AcquisisceLaRicevutaDopoLattivazione() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-sendrtv2-1", 16.00);
-
-		ResponseEntity<String> attivazione = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				COD_DOMINIO, identificativi.numeroAvviso()));
-		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+		rptAttivataDalVecchioCoreFixture(identificativi, "legacy-ccp-" + identificativi.iuv(),
+				RptAttivazioneService.VERSIONE_SANP_321_V2);
 
 		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
 				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
@@ -977,10 +1043,8 @@ class PaForNodeEndpointTest {
 	@Test
 	void paSendRTAcquisisceLaRicevutaDopoAttivazioneV2CasoIbrido() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-ibrido-v2rtv1", 16.00);
-
-		ResponseEntity<String> attivazione = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				COD_DOMINIO, identificativi.numeroAvviso()));
-		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+		rptAttivataDalVecchioCoreFixture(identificativi, "legacy-ccp-" + identificativi.iuv(),
+				RptAttivazioneService.VERSIONE_SANP_321_V2);
 
 		ResponseEntity<String> risposta = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
 				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
@@ -1002,10 +1066,8 @@ class PaForNodeEndpointTest {
 	@Test
 	void paSendRTV2AcquisisceLaRicevutaDopoAttivazioneV1CasoIbrido() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-ibrido-v1rtv2", 16.00);
-
-		ResponseEntity<String> attivazione = invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				COD_DOMINIO, identificativi.numeroAvviso()));
-		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+		rptAttivataDalVecchioCoreFixture(identificativi, "legacy-ccp-" + identificativi.iuv(),
+				RptAttivazioneService.VERSIONE_SANP_240);
 
 		ResponseEntity<String> risposta = invia(envelopeSendRTV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
 				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
@@ -1025,10 +1087,8 @@ class PaForNodeEndpointTest {
 	@Test
 	void paSendRTV2RestituisceFaultSeLidentificativoDelDebitoreNonCorrisponde() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-sendrtv2-debitore", 16.00);
-
-		ResponseEntity<String> attivazione = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
-				COD_DOMINIO, identificativi.numeroAvviso()));
-		assertThat(attivazione.getBody()).contains("<outcome>OK</outcome>");
+		rptAttivataDalVecchioCoreFixture(identificativi, "legacy-ccp-" + identificativi.iuv(),
+				RptAttivazioneService.VERSIONE_SANP_321_V2);
 
 		String receiptId = "receipt-" + identificativi.iuv();
 		String envelopeConDebitoreDiverso = """
@@ -1085,7 +1145,7 @@ class PaForNodeEndpointTest {
 	}
 
 	@Test
-	void paGetPaymentV2AttivaLaRptERestituisceIDatiDelPagamento() {
+	void paGetPaymentV2RestituisceIDatiDelPagamentoSenzaScrivereRpt() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-getpaymentv2-1", 16.00);
 
 		ResponseEntity<String> risposta = invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
@@ -1095,8 +1155,8 @@ class PaForNodeEndpointTest {
 		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>",
 				"<creditorReferenceId>" + identificativi.iuv() + "</creditorReferenceId>",
 				"<companyName>Comune di Test</companyName>");
-		assertThat(jdbcTemplate.queryForObject("select versione from rpt where iuv = ?", String.class,
-				identificativi.iuv())).isEqualTo("SANP_321_V2");
+		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
+				identificativi.iuv())).isZero();
 	}
 
 	@Test

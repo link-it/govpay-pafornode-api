@@ -16,7 +16,6 @@ import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
-import it.govpay.common.entity.StazioneEntity;
 import it.govpay.common.repository.DominioRepository;
 import it.govpay.common.repository.IntermediarioRepository;
 import it.govpay.common.repository.StazioneRepository;
@@ -30,20 +29,26 @@ import it.govpay.pafornode.verifica.VerificaClient;
 import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.repository.PagamentoRepository;
 import it.govpay.pendenze.repository.PendenzaRepository;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 
 /**
- * Intera operazione {@code paGetPayment} (V1): verifica + attivazione RPT + notifica, in
- * un'unica transazione gestita qui — non nell'endpoint. L'endpoint resta non transazionale e
- * si limita a chiamare questo servizio dentro il proprio try/catch: se @Transactional fosse
- * sull'endpoint, il commit avverrebbe DOPO il ritorno del metodo (quindi dopo il
- * try/catch), e un errore al commit (es. collisione sulla chiave della RPT) scapperebbe alla
- * costruzione della risposta applicativa KO, arrivando al chiamante come HTTP 500/SOAP Fault
- * grezzo invece che come {@code PAA_SYSTEM_ERROR}.
+ * Intera operazione {@code paGetPayment} (V1): verifica (+ attualizzazione) e costruzione
+ * della risposta, in un'unica transazione gestita qui — non nell'endpoint. L'endpoint resta
+ * non transazionale e si limita a chiamare questo servizio dentro il proprio try/catch: se
+ * @Transactional fosse sull'endpoint, il commit avverrebbe DOPO il ritorno del metodo (quindi
+ * dopo il try/catch), e un errore al commit scapperebbe alla costruzione della risposta
+ * applicativa KO, arrivando al chiamante come HTTP 500/SOAP Fault grezzo invece che come
+ * {@code PAA_SYSTEM_ERROR}.
+ *
+ * <p><b>Nessuna scrittura su {@code rpt} (issue #6, 2026-11-03)</b>: l'attivazione e' ora una
+ * sola lettura della pendenza — la riga {@code rpt} nasce solo all'arrivo della ricevuta
+ * ({@code RptAttivazioneService#ricostruisci}, orchestrato da {@code PaSendRTService}), per
+ * supportare la stazione abilitata in broadcast (ricevute per transazioni non iniziate su
+ * GovPay). {@code ctPayment} e' restituito cosi' com'e' costruito in memoria: non c'e' piu'
+ * nessuna riga persistita da cui rileggerlo per garantirne la coerenza.</p>
  *
  * <p>Include anche l'attualizzazione per validita' scaduta ({@link AttualizzazionePendenzaService},
  * §3ter del design doc) prima dei controlli di pagabilita', nello scope che quel servizio
@@ -58,8 +63,6 @@ public class PaGetPaymentActivationService {
 	private final PendenzaRepository pendenzaRepository;
 	private final PagamentoRepository pagamentoRepository;
 	private final CtPaymentPaBuilder ctPaymentPaBuilder;
-	private final RptAttivazioneService rptAttivazioneService;
-	private final NotificaAttivazioneService notificaAttivazioneService;
 	private final AttualizzazionePendenzaService attualizzazionePendenzaService;
 	private final ApplicazioneDominioResolver applicazioneDominioResolver;
 	private final VerificaClient verificaClient;
@@ -71,8 +74,7 @@ public class PaGetPaymentActivationService {
 	public PaGetPaymentActivationService(DominioRepository dominioRepository,
 			IntermediarioRepository intermediarioRepository, StazioneRepository stazioneRepository,
 			PendenzaRepository pendenzaRepository, PagamentoRepository pagamentoRepository,
-			CtPaymentPaBuilder ctPaymentPaBuilder, RptAttivazioneService rptAttivazioneService,
-			NotificaAttivazioneService notificaAttivazioneService,
+			CtPaymentPaBuilder ctPaymentPaBuilder,
 			AttualizzazionePendenzaService attualizzazionePendenzaService,
 			ApplicazioneDominioResolver applicazioneDominioResolver, VerificaClient verificaClient,
 			PendenzaVerificataMapper pendenzaVerificataMapper, PosizioneDebitoriaService posizioneDebitoriaService,
@@ -83,8 +85,6 @@ public class PaGetPaymentActivationService {
 		this.pendenzaRepository = pendenzaRepository;
 		this.pagamentoRepository = pagamentoRepository;
 		this.ctPaymentPaBuilder = ctPaymentPaBuilder;
-		this.rptAttivazioneService = rptAttivazioneService;
-		this.notificaAttivazioneService = notificaAttivazioneService;
 		this.attualizzazionePendenzaService = attualizzazionePendenzaService;
 		this.applicazioneDominioResolver = applicazioneDominioResolver;
 		this.verificaClient = verificaClient;
@@ -100,7 +100,7 @@ public class PaGetPaymentActivationService {
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_INTERMEDIARIO_ERRATO, codDominio));
 		PaForNodeChecks.verificaPrincipalAutenticato(intermediario, codDominio);
 
-		StazioneEntity stazione = stazioneRepository
+		stazioneRepository
 				.findByIntermediarioCodIntermediarioAndCodStazione(intermediario.getCodIntermediario(),
 						request.getIdStation())
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_STAZIONE_INT_ERRATA, codDominio));
@@ -117,8 +117,7 @@ public class PaGetPaymentActivationService {
 			// La prima lettura serve a individuare la pendenza. Rileggila sotto lock prima
 			// dei controlli: un'altra transazione potrebbe averla pagata/annullata nel
 			// frattempo. Un semplice lock non aggiorna lo stato gia' nel persistence
-			// context. Il lock rimane acquisito fino al commit di attivazione RPT e
-			// notifica.
+			// context. Il lock rimane acquisito fino al commit di questa transazione.
 			entityManager.refresh(pendenza, LockModeType.PESSIMISTIC_WRITE);
 			attualizzazionePendenzaService.attualizza(pendenza, dominio, codDominio);
 		} else {
@@ -137,16 +136,10 @@ public class PaGetPaymentActivationService {
 		}
 
 		CtPaymentPA ctPayment = ctPaymentPaBuilder.costruisci(pendenza, dominio, request.getTransferType());
-		String ccp = Long.toString(clock.millis());
-		Rpt rpt = rptAttivazioneService.attiva(pendenza, dominio, stazione, ccp, ctPayment);
-		notificaAttivazioneService.accoda(pendenza, rpt);
 
 		PaGetPaymentRes response = new PaGetPaymentRes();
 		response.setOutcome(StOutcome.OK);
-		// Non si riusa l'oggetto 'ctPayment' in memoria: si rilegge dall'XML appena
-		// persistito, stessa garanzia di coerenza-con-quanto-scritto del legacy
-		// (JaxbUtils.toPaGetPaymentResRPT su rpt.getXmlRpt()).
-		response.setData(rptAttivazioneService.deserializzaDati(rpt));
+		response.setData(ctPayment);
 		return response;
 	}
 

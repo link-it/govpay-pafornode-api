@@ -21,9 +21,9 @@ Operazioni esposte (contratto in [src/main/resources/xsd/paForNode.wsdl](src/mai
 | Operazione | Elemento della richiesta | Descrizione |
 |------------|--------------------------|-------------|
 | `paVerifyPaymentNotice` | `paVerifyPaymentNoticeReq` | Verifica un avviso e restituisce importo e causale della posizione debitoria. Se la pendenza non è in GovPay, la acquisisce dal gestionale dell'ente con l'operazione di verifica |
-| `paGetPayment` | `paGetPaymentReq` | Attiva il pagamento: crea la RPT e restituisce i dati di dettaglio, compresi i conti di accredito |
+| `paGetPayment` | `paGetPaymentReq` | Attiva il pagamento: legge la pendenza e restituisce i dati di dettaglio, compresi i conti di accredito. Non scrive nessuna RPT: nasce solo all'arrivo della ricevuta (anche per transazioni attivate senza passare da qui, per supportare la stazione abilitata in broadcast) |
 | `paGetPaymentV2` | `paGetPaymentV2Request` | Come `paGetPayment`, con i dati contabili e i metadati della versione 2 |
-| `paSendRT` | `paSendRTReq` | Riceve la ricevuta di pagamento e registra l'esito della pendenza |
+| `paSendRT` | `paSendRTReq` | Riceve la ricevuta di pagamento: registra l'esito della pendenza, oppure — se lo IUV non è noto a GovPay — salva solo la ricevuta, senza creare nessuna pendenza |
 | `paSendRTV2` | `paSendRTV2Request` | Come `paSendRT`, per le ricevute della versione 2 |
 
 L'operazione `paDemandPaymentNotice`, presente nel WSDL di pagoPA, **non è supportata**: la richiesta riceve HTTP 404.
@@ -56,7 +56,7 @@ Nessun metodo è abilitato di default: finché non se ne abilita uno, ogni richi
 | Gestionale dell'ente (verifica) | runtime | no | Chiamato in `paVerifyPaymentNotice` e `paGetPayment` per acquisire o aggiornare una pendenza, con il connettore di verifica dell'applicazione (tabella `connettori`) |
 | Piattaforma SEND (PagoPA) | runtime | no | Chiamata in `paGetPayment` per aggiungere il costo di notifica: `GET /delivery/v2.3/price/{paTaxId}/{noticeCode}` con il connettore indicato in `domini.cod_connettore_send` |
 | [govpay-gde-api](https://github.com/link-it/govpay-gde-api) | runtime | no | Riceve gli eventi delle operazioni (componente `API_PAGOPA`) tramite il connettore `govpay_gde_api`, secondo la policy `giornale_eventi` della tabella `configurazione` |
-| [govpay-notify-batch](https://github.com/link-it/govpay-notify-batch) | runtime | no | Spedisce alle applicazioni dell'ente le ricevute accodate nella tabella `notifiche` (tipo `RICEVUTA`); le notifiche di tipo `ATTIVAZIONE`, accodate in `paGetPayment` per le applicazioni con connettore `REST_1`, non sono spedite dal batch |
+| [govpay-notify-batch](https://github.com/link-it/govpay-notify-batch) | runtime | no | Spedisce alle applicazioni dell'ente le ricevute accodate nella tabella `notifiche` (tipo `RICEVUTA`). Nessuna notifica di tipo `ATTIVAZIONE`: `paGetPayment`/`paGetPaymentV2` non ne accodano più nessuna (rimossa insieme alla scrittura della RPT all'attivazione) — da verificare se qualche installazione esistente ne faceva uso. Nessuna notifica nemmeno per una ricevuta senza pendenza (stazione in broadcast): nessuna applicazione ha davvero avviato quella transazione tramite GovPay |
 | Core GovPay, [govpay-mail-batch](https://github.com/link-it/govpay-mail-batch), [govpay-appio-batch](https://github.com/link-it/govpay-appio-batch) | runtime | no | Spediscono i promemoria della ricevuta accodati in `promemoria` (email) e `notifiche_app_io` (App IO): oggi il core, in prospettiva i due batch, ancora in fase di avvio |
 
 Il servizio sostituisce l'API `api-pagopa` del core GovPay; la configurazione dell'intermediario e della stazione verso pagoPA è descritta nella [documentazione di GovPay](https://govpay.readthedocs.io/it/3.10.x/integrazione/index.html).

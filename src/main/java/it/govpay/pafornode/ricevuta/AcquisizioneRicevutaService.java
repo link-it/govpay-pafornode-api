@@ -83,12 +83,10 @@ import it.govpay.pafornode.rpt.NotificaAttivazioneService;
  * {@link Pagamento} ne' riga di avvisatura viene creata (nessun trasferimento esecuito da
  * registrare).</p>
  *
- * <p><b>Non implementato, documentato come punto aperto</b> (vedi
- * {@code proposta-migrazione-pafornode-v3.md} §3octies): la ricostruzione "standin" di
- * un'RPT mai attivata da GovPay ({@code CtReceiptUtils.ricostruisciRPT} nel monolite) e la
- * validazione semantica completa nel caso ibrido RPTV2_RTV1 — entrambi casi di minoranza,
- * il percorso principale (RPT regolarmente attivata da {@code paGetPayment}/
- * {@code paGetPaymentV2}, ricevuta nello stesso formato) e' quello implementato qui.</p>
+ * <p>{@link #acquisisciSenzaPendenza} copre il caso aggiunto dall'issue #6 (stazione in
+ * broadcast): una ricevuta per uno IUV che GovPay non conosce affatto, non solo una RPT
+ * mai attivata — nessuna {@link Pendenza} ne' {@link PosizioneDebitoriaService} coinvolti
+ * in quel percorso.</p>
  */
 @Service
 public class AcquisizioneRicevutaService {
@@ -231,6 +229,64 @@ public class AcquisizioneRicevutaService {
 
         accodaAvvisatura(pendenza, rpt, adesso);
         notificaAttivazioneService.accodaRicevuta(pendenza, rpt);
+
+        return rpt;
+    }
+
+    /**
+     * Come {@link #acquisisci}, per una ricevuta SENZA pendenza (issue #6, stazione in
+     * broadcast): {@code rpt} e' una riga nuova appena creata dal chiamante ({@code
+     * RptAttivazioneService#creaOrfana}, {@code idVersamento} nullo), non una RPT in
+     * attesa da aggiornare — qui si completano solo i campi relativi alla ricevuta
+     * stessa, stessa logica di {@link #acquisisci} per quella parte. Nessuna {@link
+     * Pendenza}/{@link PosizioneDebitoriaService}: nessuna transizione di stato, nessuna
+     * voce da marcare, nessun debitore da avvisare, nessuna riconciliazione di
+     * rendicontazione anomala (richiede {@code idSingoloVersamento}, qui sempre assente).
+     *
+     * <p><b>Nessuna notifica EC</b> (deciso con l'utente, 2026-11-03): la notifica
+     * RICEVUTA presuppone un'applicazione che ha davvero avviato questa transazione
+     * tramite GovPay — una ricevuta orfana non lo e' per costruzione, anche quando {@code
+     * rpt.getIdApplicazione()} e' risolta sul dominio.</p>
+     *
+     * <p>Per esito OK, un {@link Pagamento} per ogni trasferimento con importo non nullo,
+     * {@code tipo} sempre {@code ENTRATA} (nessuna voce da cui dedurre {@code MBT}, stesso
+     * fallback di {@link #determinaTipoPagamento} con {@code voce == null}) e nessun
+     * controllo di duplicato puntuale sul singolo {@link Pagamento}: {@code rpt} e' appena
+     * stata creata in questa stessa transazione, non puo' avere gia' dei pagamenti
+     * collegati.</p>
+     */
+    @Transactional
+    public Rpt acquisisciSenzaPendenza(Rpt rpt, DatiRicevutaPagamento dati) {
+        OffsetDateTime adesso = OffsetDateTime.now(clock);
+
+        rpt.setDataMsgRicevuta(adesso);
+        rpt.setDataAggiornamentoStato(adesso);
+        rpt.setCodEsitoPagamento(dati.eseguito() ? 0 : 1);
+        rpt.setXmlRt(dati.xmlRt());
+        rpt.setTipoVersamento(dati.tipoVersamento());
+        rpt.setStato("RT_ACCETTATA_PA");
+
+        if (!dati.eseguito()) {
+            return rpt;
+        }
+
+        for (DatiRicevutaPagamento.DatiTrasferimentoRicevuto trasferimento : dati.trasferimenti()) {
+            if (trasferimento.transferAmount() == 0d) {
+                continue;
+            }
+            Pagamento pagamento = new Pagamento();
+            pagamento.setCodDominio(rpt.getCodDominio());
+            pagamento.setIuv(rpt.getIuv());
+            pagamento.setIur(dati.receiptId());
+            pagamento.setIndiceDati(trasferimento.idTransfer());
+            pagamento.setImportoPagato(trasferimento.transferAmount());
+            pagamento.setDataAcquisizione(adesso);
+            pagamento.setDataPagamento(dati.dataPagamento() != null ? dati.dataPagamento() : adesso);
+            pagamento.setTipo(TipoPagamento.ENTRATA);
+            pagamento.setStato(StatoPagamentoRicevuta.PAGATO);
+            pagamento.setRpt(rpt);
+            pagamentoRepository.save(pagamento);
+        }
 
         return rpt;
     }

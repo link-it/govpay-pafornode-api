@@ -16,7 +16,6 @@ import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
-import it.govpay.common.entity.StazioneEntity;
 import it.govpay.common.repository.DominioRepository;
 import it.govpay.common.repository.IntermediarioRepository;
 import it.govpay.common.repository.StazioneRepository;
@@ -30,28 +29,26 @@ import it.govpay.pafornode.verifica.VerificaClient;
 import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.repository.PagamentoRepository;
 import it.govpay.pendenze.repository.PendenzaRepository;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 
 /**
- * Intera operazione {@code paGetPaymentV2}: verifica + attivazione RPT + notifica, stessa
- * struttura transazionale di {@link PaGetPaymentActivationService} (V1) — stesso motivo:
- * l'endpoint resta non transazionale, l'intera operazione e' qui.
+ * Intera operazione {@code paGetPaymentV2}: verifica (+ attualizzazione) e costruzione della
+ * risposta, stessa struttura transazionale di {@link PaGetPaymentActivationService} (V1) —
+ * stesso motivo: l'endpoint resta non transazionale, l'intera operazione e' qui. Nessuna
+ * scrittura su {@code rpt} (issue #6) — vedi Javadoc di classe di
+ * {@link PaGetPaymentActivationService}.
  *
  * <p>Analisi completa del legacy nel design doc: {@code paGetPaymentV2}
  * (`PagamentiTelematiciCCPImpl.java:1283-1591`) e' identico a {@code paGetPayment} fino alla
  * risoluzione/attualizzazione della pendenza (stesso codice, verificato riga per riga) — da
  * qui tutti i servizi condivisi (controlli, attualizzazione, risoluzione applicazione) sono
- * riusati senza modifiche. Le uniche differenze reali: nessun rifiuto preventivo della
- * marca da bollo (gestita per transfer da {@link CtPaymentPaV2Builder}), builder/versione
- * RPT/risposta V2 ({@link RptAttivazioneService#attivaV2}).
+ * riusati senza modifiche. L'unica differenza reale rimasta: nessun rifiuto preventivo della
+ * marca da bollo (gestita per transfer da {@link CtPaymentPaV2Builder}).
  */
 @Service
 public class PaGetPaymentV2ActivationService {
-
-	private static final int LUNGHEZZA_MASSIMA_COD_CARRELLO = 35;
 
 	private final DominioRepository dominioRepository;
 	private final IntermediarioRepository intermediarioRepository;
@@ -59,8 +56,6 @@ public class PaGetPaymentV2ActivationService {
 	private final PendenzaRepository pendenzaRepository;
 	private final PagamentoRepository pagamentoRepository;
 	private final CtPaymentPaV2Builder ctPaymentPaV2Builder;
-	private final RptAttivazioneService rptAttivazioneService;
-	private final NotificaAttivazioneService notificaAttivazioneService;
 	private final AttualizzazionePendenzaService attualizzazionePendenzaService;
 	private final ApplicazioneDominioResolver applicazioneDominioResolver;
 	private final VerificaClient verificaClient;
@@ -72,8 +67,7 @@ public class PaGetPaymentV2ActivationService {
 	public PaGetPaymentV2ActivationService(DominioRepository dominioRepository,
 			IntermediarioRepository intermediarioRepository, StazioneRepository stazioneRepository,
 			PendenzaRepository pendenzaRepository, PagamentoRepository pagamentoRepository,
-			CtPaymentPaV2Builder ctPaymentPaV2Builder, RptAttivazioneService rptAttivazioneService,
-			NotificaAttivazioneService notificaAttivazioneService,
+			CtPaymentPaV2Builder ctPaymentPaV2Builder,
 			AttualizzazionePendenzaService attualizzazionePendenzaService,
 			ApplicazioneDominioResolver applicazioneDominioResolver, VerificaClient verificaClient,
 			PendenzaVerificataMapper pendenzaVerificataMapper, PosizioneDebitoriaService posizioneDebitoriaService,
@@ -84,8 +78,6 @@ public class PaGetPaymentV2ActivationService {
 		this.pendenzaRepository = pendenzaRepository;
 		this.pagamentoRepository = pagamentoRepository;
 		this.ctPaymentPaV2Builder = ctPaymentPaV2Builder;
-		this.rptAttivazioneService = rptAttivazioneService;
-		this.notificaAttivazioneService = notificaAttivazioneService;
 		this.attualizzazionePendenzaService = attualizzazionePendenzaService;
 		this.applicazioneDominioResolver = applicazioneDominioResolver;
 		this.verificaClient = verificaClient;
@@ -102,7 +94,7 @@ public class PaGetPaymentV2ActivationService {
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_INTERMEDIARIO_ERRATO, codDominio));
 		PaForNodeChecks.verificaPrincipalAutenticato(intermediario, codDominio);
 
-		StazioneEntity stazione = stazioneRepository
+		stazioneRepository
 				.findByIntermediarioCodIntermediarioAndCodStazione(intermediario.getCodIntermediario(),
 						request.getIdStation())
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_STAZIONE_INT_ERRATA, codDominio));
@@ -125,14 +117,10 @@ public class PaGetPaymentV2ActivationService {
 		PaForNodeChecks.verificaStatoPagabile(pendenza, codDominio, clock, pagamentoRepository);
 
 		CtPaymentPAV2 ctPayment = ctPaymentPaV2Builder.costruisci(pendenza, dominio, request.getTransferType());
-		String ccp = Long.toString(clock.millis());
-		String codCarrello = troncaCodCarrello(request.getPaymentNote());
-		Rpt rpt = rptAttivazioneService.attivaV2(pendenza, dominio, stazione, ccp, codCarrello, ctPayment);
-		notificaAttivazioneService.accoda(pendenza, rpt);
 
 		PaGetPaymentV2Response response = new PaGetPaymentV2Response();
 		response.setOutcome(StOutcome.OK);
-		response.setData(rptAttivazioneService.deserializzaDatiV2(rpt));
+		response.setData(ctPayment);
 		return response;
 	}
 
@@ -154,13 +142,5 @@ public class PaGetPaymentV2ActivationService {
 				applicazione.getId(), dominio.getId(), numeroAvviso);
 		PosizioneDebitoria creata = posizioneDebitoriaService.crea(comando);
 		return creata.getOpzioniPagamento().get(0).getPendenze().get(0);
-	}
-
-	private static String troncaCodCarrello(String codCarrello) {
-		if (codCarrello == null) {
-			return null;
-		}
-		return codCarrello.length() > LUNGHEZZA_MASSIMA_COD_CARRELLO
-				? codCarrello.substring(0, LUNGHEZZA_MASSIMA_COD_CARRELLO) : codCarrello;
 	}
 }

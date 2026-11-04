@@ -921,6 +921,34 @@ class PaForNodeEndpointTest {
 				identificativi.iuv())).isEqualTo(2);
 	}
 
+	/**
+	 * Verifica esplicita dell'issue #6 (Fase 4): due ricevute concorrenti con {@code
+	 * receiptId} diversi sullo stesso IUV — bug di revisione corretto, 2026-11-04. Prima di
+	 * questa fase la seconda ricevuta veniva rifiutata con {@code PAA_RPT_SCONOSCIUTA}
+	 * (nessuna RPT "in attesa" dopo la prima acquisizione); ora viene acquisita su una RPT
+	 * nuova e la pendenza resta {@code ESEGUITO} ma marcata anomala.
+	 */
+	@Test
+	void paSendRTAcquisisceUnaSecondaRicevutaConReceiptIdDiversoEMarcaAnomalo() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-seconda-ricevuta", 16.00);
+
+		ResponseEntity<String> prima = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-a-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+		assertThat(prima.getBody()).contains("<outcome>OK</outcome>");
+
+		ResponseEntity<String> seconda = invia(envelopeSendRT(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE,
+				"receipt-b-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
+
+		assertThat(seconda.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(seconda.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
+				identificativi.iuv())).isEqualTo(2);
+		assertThat(jdbcTemplate.queryForObject("select stato_versamento from versamenti where iuv_versamento = ?",
+				String.class, identificativi.iuv())).isEqualTo("ESEGUITO");
+		assertThat(jdbcTemplate.queryForObject("select anomalo from versamenti where iuv_versamento = ?",
+				Boolean.class, identificativi.iuv())).isTrue();
+	}
+
 	private String envelopeSendRTV2(String idPA, String idBrokerPA, String idStation, String receiptId,
 			String fiscalCode, String creditorReferenceId, double paymentAmount, int idTransfer,
 			double transferAmount) {
@@ -972,15 +1000,14 @@ class PaForNodeEndpointTest {
 	}
 
 	/**
-	 * Asimmetria col caso V1 ({@link
-	 * #paSendRTRicostruisceStandinAncheConUnaRptDiAltroModelloGiaAccettataDalNodo}): su
-	 * {@code paSendRTV2} una RPT di un ALTRO modello BLOCCA lo standin — il legacy qui non
-	 * filtra per modello. Stato diverso da {@code RPT_ACCETTATA_NODO} apposta: altrimenti
-	 * la ricerca (anch'essa non filtrata per modello su V2) la troverebbe e l'userebbe
-	 * direttamente come RPT in attesa, senza mai arrivare al controllo dello standin.
+	 * Bug di revisione corretto, 2026-11-04 (issue #6): una RPT di un ALTRO modello (gia'
+	 * {@code RPT_RIFIUTATA_NODO}, quindi non "in attesa") non blocca piu' la ricostruzione
+	 * "standin" per {@code paSendRTV2} — prima rispondeva {@code PAA_RPT_SCONOSCIUTA}, ora
+	 * acquisisce comunque la ricevuta su una RPT nuova, come nel caso V1 (vedi {@link
+	 * #paSendRTRicostruisceStandinAncheConUnaRptDiAltroModelloGiaAccettataDalNodo}).
 	 */
 	@Test
-	void paSendRTV2RestituisceFaultSeEsisteGiaUnaRptDiAltroModello() {
+	void paSendRTV2RicostruisceStandinAncheConUnaRptDiAltroModello() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-standin-v2-altro-modello", 16.00);
 		Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(idDominio, identificativi.iuv()).orElseThrow();
 
@@ -1006,9 +1033,13 @@ class PaForNodeEndpointTest {
 				"receipt-" + identificativi.iuv(), COD_DOMINIO, identificativi.iuv(), 16.00, 1, 16.00));
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(risposta.getBody()).contains("<outcome>KO</outcome>", "<faultCode>PAA_RPT_SCONOSCIUTA</faultCode>");
+		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ? and ccp = ?", String.class,
+				identificativi.iuv(), "receipt-" + identificativi.iuv())).isEqualTo("RT_ACCETTATA_PA");
+		assertThat(jdbcTemplate.queryForObject("select stato from rpt where iuv = ? and ccp = ?", String.class,
+				identificativi.iuv(), "altro-" + identificativi.iuv())).isEqualTo("RPT_RIFIUTATA_NODO");
 		assertThat(jdbcTemplate.queryForObject("select count(*) from rpt where iuv = ?", Integer.class,
-				identificativi.iuv())).isEqualTo(1);
+				identificativi.iuv())).isEqualTo(2);
 	}
 
 	/**

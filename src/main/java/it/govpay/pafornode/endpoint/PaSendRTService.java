@@ -16,7 +16,6 @@ import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Marshaller;
 
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -72,19 +71,15 @@ import it.govpay.pafornode.ricevuta.DatiRicevutaPagamento.DatiTrasferimentoRicev
  * govpay-common-pendenze: dipende dai tipi JAXB della richiesta originale).</p>
  *
  * <p><b>Ricostruzione "standin"</b> (punto aperto #14 del design doc, {@code
- * CtReceiptUtils.ricostruisciRPT}/{@code CtReceiptV2Utils.ricostruisciRPT} nel monolite):
- * se non esiste nessuna RPT in attesa di ricevuta ({@code RPT_ACCETTATA_NODO}) E non
- * esiste nessun'altra RPT per questa pendenza, significa che il pagamento e' stato
- * attivato direttamente al PSP tramite il Nodo, senza mai passare da {@code
- * paGetPayment}/{@code paGetPaymentV2} — {@link #trovaRptInAttesa} ricostruisce in quel
- * caso una RPT minimale ({@link RptAttivazioneService#ricostruisci}, {@code xmlRpt}
- * sempre {@code null}). Il filtro per modello su questa ricerca e' ASIMMETRICO fra le due
- * operazioni, fedele al legacy: {@code paSendRT} (V1) filtra per {@code
- * ATTIVATO_PRESSO_PSP} (una RPT di un altro modello non blocca lo standin), {@code
- * paSendRTV2} non filtra affatto (qualunque RPT, di qualunque modello, blocca lo standin)
- * — vedi Javadoc di {@link #trovaRptInAttesa}. Se esiste gia' una RPT che soddisfa il
- * criterio, resta {@code PAA_RPT_SCONOSCIUTA} come nel legacy: non si ricostruisce una
- * seconda volta.</p>
+ * CtReceiptUtils.ricostruisciRPT}/{@code CtReceiptV2Utils.ricostruisciRPT} nel monolite,
+ * diventata l'UNICO modo in cui nasce una RPT dalla Fase 3 dell'issue #6, non piu' un
+ * caso di minoranza): se non esiste nessuna RPT in attesa di ricevuta ({@code
+ * RPT_ACCETTATA_NODO}), {@link #trovaRptInAttesa} ricostruisce SEMPRE una RPT minimale
+ * ({@link RptAttivazioneService#ricostruisci}, {@code xmlRpt} sempre {@code null}) — anche
+ * quando la pendenza ha gia' un'altra RPT, conclusa o no (bug di revisione corretto,
+ * 2026-11-04: una seconda ricevuta, es. due canali di pagamento concorrenti, deve essere
+ * acquisita e marcare la pendenza anomala, non rifiutata — vedi Javadoc di {@link
+ * #trovaRptInAttesa}).</p>
  *
  * <p>La deserializzazione/validazione semantica RT-contro-RPT ({@link
  * #validaSemantica}/{@code V2}) viene saltata quando la RPT non ha {@code xmlRpt} (il caso
@@ -181,7 +176,7 @@ public class PaSendRTService {
 		}
 		Pendenza pendenza = pendenzaEsistente.get();
 
-		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
+		Rpt rpt = trovaRptInAttesa(dominio, pendenza, request.getIdStation(), receipt.getReceiptId(), dataPagamento,
 				RptAttivazioneService.VERSIONE_SANP_240, true, codDominio);
 
 		if (rpt.getXmlRpt() != null) {
@@ -234,7 +229,7 @@ public class PaSendRTService {
 		}
 		Pendenza pendenza = pendenzaEsistente.get();
 
-		Rpt rpt = trovaRptInAttesa(dominio, pendenza, receipt.getReceiptId(), dataPagamento,
+		Rpt rpt = trovaRptInAttesa(dominio, pendenza, request.getIdStation(), receipt.getReceiptId(), dataPagamento,
 				RptAttivazioneService.VERSIONE_SANP_321_V2, false, codDominio);
 
 		if (rpt.getXmlRpt() != null) {
@@ -308,8 +303,18 @@ public class PaSendRTService {
 	 * percorso con pendenza) copre il caso comune, ma una race genuina viene rilevata solo
 	 * al momento dell'insert, dalla violazione del vincolo unique fisico {@code (iuv, ccp,
 	 * cod_dominio)} — {@code rptRepository.save} con {@code GenerationType.IDENTITY} esegue
-	 * l'insert immediatamente, non al commit, quindi la violazione e' intercettabile qui e
-	 * non propaga come errore generico (decisione esplicita dell'issue).</p>
+	 * l'insert immediatamente, non al commit.</p>
+	 *
+	 * <p><b>{@code DataIntegrityViolationException} NON catturata qui</b> (bug trovato in
+	 * revisione, 2026-11-04): {@code creaOrfana} e' {@code @Transactional} e partecipa alla
+	 * STESSA transazione di questo metodo — quando lancia, il proxy Spring marca gia' quella
+	 * transazione {@code rollback-only} PRIMA che un catch qui possa tradurla in {@code
+	 * NdpException}; il successivo tentativo di commit (per {@code noRollbackFor =
+	 * NdpException.class} su {@code eseguiSendRT}/{@code V2}) fallirebbe con {@code
+	 * UnexpectedRollbackException}, perdendo {@code PAA_RECEIPT_DUPLICATA}. Si lascia quindi
+	 * propagare cosi' com'e': la transazione fa un rollback NORMALE (corretto, non c'e' nulla
+	 * da preservare), e la traduzione in {@code PAA_RECEIPT_DUPLICATA} avviene in {@code
+	 * PaForNodeEndpoint}, fuori da qualunque transazione.</p>
 	 */
 	private void gestisciRicevutaSenzaPendenza(DominioEntity dominio, String codStazioneRichiesta, String iuv,
 			String versione, DatiRicevutaPagamento dati, String codDominioFault) {
@@ -319,21 +324,15 @@ public class PaSendRTService {
 		Long idApplicazione = applicazioneDominioResolver.risolvi(dominio, iuv).map(ApplicazioneEntity::getId)
 				.orElse(null);
 
-		Rpt rpt;
-		try {
-			rpt = rptAttivazioneService.creaOrfana(dominio.getCodDominio(), iuv, codStazioneRichiesta, idApplicazione,
-					versione, dati.receiptId(), dati.dataPagamento());
-		} catch (DataIntegrityViolationException e) {
-			throw new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, codDominioFault);
-		}
+		Rpt rpt = rptAttivazioneService.creaOrfana(dominio.getCodDominio(), iuv, codStazioneRichiesta, idApplicazione,
+				versione, dati.receiptId(), dati.dataPagamento());
 		acquisizioneRicevutaService.acquisisciSenzaPendenza(rpt, dati);
 	}
 
 	/**
 	 * Idempotenza (gia' acquisita con questo {@code receiptId}) poi ricerca della RPT in
 	 * attesa di ricevuta — in quest'ordine, cosi' un retry con lo stesso {@code receiptId}
-	 * produce {@code PAA_RECEIPT_DUPLICATA} e non {@code PAA_RPT_SCONOSCIUTA} (la riga e'
-	 * ormai in stato {@code RT_ACCETTATA_PA}, non piu' {@code RPT_ACCETTATA_NODO}).
+	 * produce {@code PAA_RECEIPT_DUPLICATA}.
 	 *
 	 * <p>{@code filtraPerModelloPsp} replica un'asimmetria presente anche nel legacy fra
 	 * le due operazioni: {@code paSendRT} (V1, {@code CtReceiptUtils.acquisisciRT}) filtra
@@ -345,11 +344,25 @@ public class PaSendRTService {
 	 * richiesto, cioe' per V1), una RPT di un ALTRO modello ancora in questo stato
 	 * verrebbe selezionata ed usata al posto della ricostruzione "standin".</p>
 	 *
-	 * <p>Se nessuna RPT in attesa esiste, ricade sul caso "standin" ({@link #standin})
-	 * prima di arrendersi col fault — vedi Javadoc di classe.</p>
+	 * <p><b>Nessun fault se non c'e' nessuna RPT in attesa</b> (bug di revisione corretto,
+	 * 2026-11-04, issue #6): si ricostruisce SEMPRE una nuova RPT ({@link
+	 * RptAttivazioneService#ricostruisci}), anche quando la pendenza ne ha gia' una
+	 * (conclusa o no). Prima di questa fase esisteva qui un controllo
+	 * ("{@code esisteGiaUnaRpt}" → {@code PAA_RPT_SCONOSCIUTA}") erede del legacy, dove
+	 * aveva senso: un'RPT gia' presente significava che l'attivazione era passata
+	 * per forza da {@code paGetPayment}, quindi una ricevuta "senza RPT in attesa" era
+	 * davvero anomala. Da quando l'attivazione non scrive piu' nessuna RPT (Fase 3), lo
+	 * standin e' l'UNICO modo in cui nasce una RPT: quel controllo bloccava
+	 * sistematicamente qualunque SECONDA ricevuta (anche con {@code receiptId} diverso,
+	 * es. due canali di pagamento concorrenti) con un fault invece di acquisirla e
+	 * marcare la pendenza anomala, come richiede esplicitamente la #6. La RPT
+	 * precedente resta intatta (nuova riga, {@code ccp} diverso); {@link
+	 * AcquisizioneRicevutaService#acquisisci} marca comunque anomalo quando lo stato
+	 * della pendenza non era {@code NON_ESEGUITO}/{@code ANNULLATO}.</p>
 	 */
-	private Rpt trovaRptInAttesa(DominioEntity dominio, Pendenza pendenza, String receiptId,
-			OffsetDateTime dataPagamento, String versione, boolean filtraPerModelloPsp, String codDominioFault) {
+	private Rpt trovaRptInAttesa(DominioEntity dominio, Pendenza pendenza, String codStazioneRichiesta,
+			String receiptId, OffsetDateTime dataPagamento, String versione, boolean filtraPerModelloPsp,
+			String codDominioFault) {
 		if (rptRepository.findByCodDominioAndIuvAndIur(dominio.getCodDominio(), pendenza.getIuv(), receiptId)
 				.isPresent()) {
 			throw new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, codDominioFault);
@@ -358,28 +371,8 @@ public class PaSendRTService {
 				? rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(pendenza.getId(),
 						StatoRpt.RPT_ACCETTATA_NODO.name(), RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)
 				: rptRepository.findByIdVersamentoAndStato(pendenza.getId(), StatoRpt.RPT_ACCETTATA_NODO.name());
-		return inAttesa.orElseGet(
-				() -> standin(dominio, pendenza, receiptId, dataPagamento, versione, filtraPerModelloPsp, codDominioFault));
-	}
-
-	/**
-	 * Ricostruzione "standin" (vedi Javadoc di classe e di {@link #trovaRptInAttesa} per
-	 * {@code filtraPerModelloPsp}): si applica solo se non esiste NESSUN'ALTRA RPT per
-	 * questa pendenza (del modello {@code ATTIVATO_PRESSO_PSP} per V1, di qualunque
-	 * modello per V2 — stessa asimmetria del legacy), di qualunque stato. Se invece esiste
-	 * gia' una RPT che soddisfa questo criterio, resta {@code PAA_RPT_SCONOSCIUTA} come nel
-	 * legacy, non si ricostruisce una seconda volta.
-	 */
-	private Rpt standin(DominioEntity dominio, Pendenza pendenza, String receiptId, OffsetDateTime dataPagamento,
-			String versione, boolean filtraPerModelloPsp, String codDominioFault) {
-		boolean esisteGiaUnaRpt = filtraPerModelloPsp
-				? rptRepository.existsByIdVersamentoAndModelloPagamento(pendenza.getId(),
-						RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)
-				: rptRepository.existsByIdVersamento(pendenza.getId());
-		if (esisteGiaUnaRpt) {
-			throw new NdpException(FaultPa.PAA_RPT_SCONOSCIUTA, codDominioFault);
-		}
-		return rptAttivazioneService.ricostruisci(pendenza, dominio, versione, receiptId, dataPagamento);
+		return inAttesa.orElseGet(() -> rptAttivazioneService.ricostruisci(pendenza, dominio, codStazioneRichiesta,
+				versione, receiptId, dataPagamento));
 	}
 
 	/**

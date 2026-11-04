@@ -2,6 +2,7 @@ package it.govpay.pafornode.endpoint;
 
 import jakarta.xml.bind.JAXBElement;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.ws.server.endpoint.annotation.Endpoint;
 import org.springframework.ws.server.endpoint.annotation.PayloadRoot;
 import org.springframework.ws.server.endpoint.annotation.RequestPayload;
@@ -161,6 +162,24 @@ public class PaForNodeEndpoint {
 	 * acquisizione della ricevuta e' dentro {@link PaSendRTService}. A differenza di
 	 * {@code paVerifyPaymentNotice}/{@code paGetPayment}, IUV e dominio si leggono
 	 * direttamente da {@code CtReceipt}, non da un {@code CtQrCode}.
+	 *
+	 * <p><b>{@code DataIntegrityViolationException} intercettata qui, non in {@code
+	 * PaSendRTService}</b> (bug di revisione corretto, 2026-11-04): e' la violazione del
+	 * vincolo unique su {@code rpt} per una ricevuta senza pendenza in race con un'altra
+	 * (stesso {@code receiptId}, issue #6) — mappata su {@code PAA_RECEIPT_DUPLICATA}
+	 * invece di cadere nel generico {@code PAA_SYSTEM_ERROR} del catch sotto. Va presa qui,
+	 * DOPO che la transazione di {@code eseguiSendRT} ha gia' fatto un rollback normale (non
+	 * c'era nulla da preservare): catturarla dentro il service, che partecipa alla stessa
+	 * transazione del chiamante, produrrebbe {@code UnexpectedRollbackException} al commit
+	 * invece del fault (vedi Javadoc di {@code PaSendRTService#gestisciRicevutaSenzaPendenza}).
+	 * </p>
+	 *
+	 * <p><b>Riconosce specificamente il vincolo di {@code rpt}</b> (bug di revisione
+	 * corretto, 2026-11-04): {@link #vincolaRptGiaAcquisita} verifica che sia proprio
+	 * {@code unique_rpt_id_transazione} a essere violato — una violazione di FK, NOT NULL o
+	 * di un altro vincolo non significa che la ricevuta sia gia' stata acquisita, e andrebbe
+	 * comunque nel generico {@code PAA_SYSTEM_ERROR}, non in {@code PAA_RECEIPT_DUPLICATA}.
+	 * </p>
 	 */
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paSendRTReq")
 	@ResponsePayload
@@ -171,10 +190,29 @@ public class PaForNodeEndpoint {
 			response = paSendRTService.eseguiSendRT(request);
 		} catch (NdpException e) {
 			response = buildFaultSendRT(e);
+		} catch (DataIntegrityViolationException e) {
+			response = buildFaultSendRT(vincolaRptGiaAcquisita(e)
+					? new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, e.getMessage(), codDominio, e)
+					: new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		} catch (RuntimeException e) {
 			response = buildFaultSendRT(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}
 		return objectFactory.createPaSendRTRes(response);
+	}
+
+	/**
+	 * {@code true} solo se la violazione e' proprio sul vincolo unique
+	 * {@code unique_rpt_id_transazione} ({@code iuv}, {@code ccp}/{@code receiptId},
+	 * {@code cod_dominio}) — il solo caso che significhi "ricevuta gia' acquisita" per
+	 * questo contratto. Il nome del vincolo compare testualmente nel messaggio della causa
+	 * piu' specifica sia su H2 (usato nei test) sia su PostgreSQL (produzione): non serve
+	 * ispezionare il dialetto. Qualunque altra {@code DataIntegrityViolationException} (FK,
+	 * NOT NULL, un vincolo diverso) NON significa duplicato — resta {@code
+	 * PAA_SYSTEM_ERROR}.
+	 */
+	private static boolean vincolaRptGiaAcquisita(DataIntegrityViolationException e) {
+		String messaggio = e.getMostSpecificCause().getMessage();
+		return messaggio != null && messaggio.toLowerCase().contains("unique_rpt_id_transazione");
 	}
 
 	private static PaSendRTRes buildFaultSendRT(NdpException e) {
@@ -190,7 +228,7 @@ public class PaForNodeEndpoint {
 		return response;
 	}
 
-	/** Come {@link #paSendRT}, per {@code paSendRTV2}. */
+	/** Come {@link #paSendRT}, per {@code paSendRTV2} — stesso motivo per il catch dedicato. */
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paSendRTV2Request")
 	@ResponsePayload
 	public JAXBElement<PaSendRTV2Response> paSendRTV2(@RequestPayload PaSendRTV2Request request) {
@@ -200,6 +238,10 @@ public class PaForNodeEndpoint {
 			response = paSendRTService.eseguiSendRTV2(request);
 		} catch (NdpException e) {
 			response = buildFaultSendRTV2(e);
+		} catch (DataIntegrityViolationException e) {
+			response = buildFaultSendRTV2(vincolaRptGiaAcquisita(e)
+					? new NdpException(FaultPa.PAA_RECEIPT_DUPLICATA, e.getMessage(), codDominio, e)
+					: new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		} catch (RuntimeException e) {
 			response = buildFaultSendRTV2(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}

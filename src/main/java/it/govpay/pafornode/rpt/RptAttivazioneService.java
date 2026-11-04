@@ -19,7 +19,6 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
 import it.govpay.common.entity.DominioEntity;
-import it.govpay.common.entity.StazioneEntity;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.repository.PendenzaRepository;
@@ -122,21 +121,23 @@ public class RptAttivazioneService {
 	 * quindi saltata dal chiamante, stesso comportamento del legacy che la condiziona a
 	 * {@code rpt.getXmlRpt() != null}. Nessun annullamento di RPT pendenti: per costruzione
 	 * non esiste ancora nessuna RPT su questa pendenza, altrimenti il chiamante non avrebbe
-	 * scelto questo percorso. La stazione e' quella di default del dominio
-	 * ({@link DominioEntity#getStazione()}), non quella autenticata dalla chiamata corrente
-	 * — non c'e' stata nessuna attivazione a cui agganciarsi; {@code codMsgRichiesta}/
-	 * {@code iur} sono il {@code receiptId} della ricevuta in arrivo, non un valore generato
-	 * qui.
+	 * scelto questo percorso. {@code codMsgRichiesta}/{@code iur} sono il {@code receiptId}
+	 * della ricevuta in arrivo, non un valore generato qui.
+	 *
+	 * <p>{@code codStazione} e' quella AUTENTICATA della richiesta corrente ({@code
+	 * codStazioneRichiesta}), non la stazione di default del dominio (bug trovato in
+	 * revisione, 2026-11-04: usava {@code DominioEntity#getStazione()}, inconsistente con
+	 * {@link #creaOrfana} e con l'issue #6, che ammette esplicitamente stazioni diverse da
+	 * quella di default anche con pendenza nota — "Stazioni accettate in paSendRT/
+	 * paSendRTV2: solo quelle configurate in GovPay (anche diverse dalla stazione del
+	 * dominio)"). Il chiamante l'ha gia' validata ({@code PaSendRTService
+	 * #verificaAutorizzazione}), nessun controllo di nullita' necessario qui.</p>
 	 */
 	@Transactional
-	public Rpt ricostruisci(Pendenza pendenza, DominioEntity dominio, String versione, String receiptId,
-			OffsetDateTime dataPagamento) {
+	public Rpt ricostruisci(Pendenza pendenza, DominioEntity dominio, String codStazioneRichiesta, String versione,
+			String receiptId, OffsetDateTime dataPagamento) {
 		pendenzaRepository.findByIdForUpdate(pendenza.getId())
 				.orElseThrow(() -> new IllegalStateException("Pendenza [" + pendenza.getId() + "] non trovata."));
-		StazioneEntity stazione = dominio.getStazione();
-		if (stazione == null) {
-			throw new IllegalStateException("Dominio [" + dominio.getCodDominio() + "] senza stazione di default.");
-		}
 
 		OffsetDateTime adesso = OffsetDateTime.now(clock);
 		Rpt rpt = new Rpt();
@@ -144,7 +145,7 @@ public class RptAttivazioneService {
 		rpt.setIuv(pendenza.getIuv());
 		rpt.setIur(receiptId);
 		rpt.setCodDominio(dominio.getCodDominio());
-		rpt.setCodStazione(stazione.getCodStazione());
+		rpt.setCodStazione(codStazioneRichiesta);
 		rpt.setCodMsgRichiesta(receiptId);
 		rpt.setVersione(versione);
 		rpt.setStato(StatoRpt.RPT_ACCETTATA_NODO.name());
@@ -170,7 +171,12 @@ public class RptAttivazioneService {
 	 * esegue l'insert immediatamente, non al commit — una violazione del vincolo unique
 	 * {@code (iuv, ccp, cod_dominio)} (due ricevute concorrenti con lo stesso {@code
 	 * receiptId} su questo stesso IUV sconosciuto) emerge quindi qui, non a un commit
-	 * successivo: il chiamante la cattura e la traduce in {@code PAA_RECEIPT_DUPLICATA}.</p>
+	 * successivo. Il chiamante NON la cattura (bug di revisione corretto, 2026-11-04: questo
+	 * metodo e' {@code @Transactional} e partecipa alla transazione del chiamante — un catch
+	 * li' arriverebbe DOPO che il proxy Spring ha gia' marcato quella transazione
+	 * rollback-only, causando {@code UnexpectedRollbackException} al commit invece del
+	 * fault voluto): si lascia propagare, rollback normale, tradotta in {@code
+	 * PAA_RECEIPT_DUPLICATA} da {@code PaForNodeEndpoint}, fuori da qualunque transazione.</p>
 	 */
 	@Transactional
 	public Rpt creaOrfana(String codDominio, String iuv, String codStazione, Long idApplicazione, String versione,

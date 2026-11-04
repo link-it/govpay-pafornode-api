@@ -11,7 +11,6 @@ import org.springframework.transaction.annotation.Transactional;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.ConnettoreEntity;
 import it.govpay.common.entity.DominioEntity;
-import it.govpay.common.entity.StazioneEntity;
 import it.govpay.common.repository.ApplicazioneRepository;
 import it.govpay.common.repository.ConnettoreEntityRepository;
 import it.govpay.pafornode.Application;
@@ -108,15 +107,12 @@ class NotificaAttivazioneServiceTest {
 		DominioEntity dominio = new DominioEntity();
 		dominio.setId(1L);
 		dominio.setCodDominio("12345678901");
-		StazioneEntity stazione = new StazioneEntity();
-		stazione.setCodStazione("STAZIONE-TEST");
-		dominio.setStazione(stazione);
 
 		// Nessuna attivazione reale (issue #6, non scrive piu' rpt): basta una riga valida
 		// per soddisfare il vincolo FK notifiche.id_rpt -> rpt.id, il contenuto non conta
 		// per questi test.
-		return rptAttivazioneService.ricostruisci(pendenzaPersistita, dominio, RptAttivazioneService.VERSIONE_SANP_240,
-				"receipt-" + iuv, null);
+		return rptAttivazioneService.ricostruisci(pendenzaPersistita, dominio, "STAZIONE-TEST",
+				RptAttivazioneService.VERSIONE_SANP_240, "receipt-" + iuv, null);
 	}
 
 	@Test

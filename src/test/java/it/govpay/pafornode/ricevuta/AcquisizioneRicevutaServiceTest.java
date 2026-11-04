@@ -266,6 +266,205 @@ class AcquisizioneRicevutaServiceTest {
     }
 
     /**
+     * Confronto con la pendenza richiesto dalla Fase 4 dell'issue #6 (bug di revisione
+     * corretto, 2026-11-04): senza {@code xmlRpt} (percorso standin) non c'e' nessuna
+     * validazione semantica a monte che confronti l'importo della ricevuta con quello
+     * atteso dalla pendenza ({@code importo=10.00} di fixture) — una ricevuta da 5 euro
+     * viene comunque acquisita (il pagamento e' realmente avvenuto secondo pagoPA), ma la
+     * pendenza va marcata anomala, non portata a {@code ESEGUITO} silenziosamente.
+     */
+    @Test
+    void importoDiversoDalPrevistoVieneAcquisitoEMarcatoAnomalo() {
+        ApplicazioneEntity applicazione = applicazionePersistita("APP-IMPORTO");
+        Long idDominio = dominioPersistito("55555555555");
+        Long idTipoVersamentoDominio = tipoVersamentoDominioPersistito(idDominio, false, false, false);
+        Pendenza pendenza = pendenzaPersistita(applicazione.getId(), idDominio, idTipoVersamentoDominio,
+                "100000000000000099");
+        Rpt rpt = rptAccettataNodoPersistita(pendenza);
+
+        DatiRicevutaPagamento dati = new DatiRicevutaPagamento("receipt-importo", true, ADESSO, 5.00, "PSP1",
+                "Psp Uno", "ID-PSP-1", "CH-1", "BBT", "<Receipt/>".getBytes(StandardCharsets.UTF_8),
+                List.of(new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(1, 5.00)));
+
+        service.acquisisci(pendenza, rpt, dati);
+
+        assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.ESEGUITO);
+        assertThat(pendenza.isAnomalo()).isTrue();
+        // Qui l'unico trasferimento (5.00) e' anche diverso dalla sua voce (10.00): il
+        // controllo sul dettaglio (nuovo, bug di revisione corretto, 2026-11-04) lo rileva
+        // in aggiunta a quello sul totale — entrambe le note compaiono.
+        assertThat(pendenza.getDescrizioneStato()).contains("Importo pagato diverso da quello previsto",
+                "Dettaglio dei trasferimenti diverso da quello previsto dalle voci della pendenza");
+        assertThat(pagamentoRepository.findByCodDominioAndIuv(rpt.getCodDominio(), rpt.getIuv())).hasSize(1);
+    }
+
+    /**
+     * Bug di revisione corretto, 2026-11-04 (issue #6): il confronto sul totale deve
+     * includere la quota SEND, non solo {@code pendenza.getImporto()} —
+     * {@code CtPaymentPaBuilder}/{@code V2Builder} la aggiungono all'importo esposto al
+     * Nodo. Una pendenza da 10€ con 2€ di SEND, pagata correttamente per 12€, NON deve
+     * risultare anomala.
+     */
+    @Test
+    void importoConSendCorrettoNonVieneMarcatoAnomalo() {
+        ApplicazioneEntity applicazione = applicazionePersistita("APP-SEND");
+        Long idDominio = dominioPersistito("77777777777");
+        Long idTipoVersamentoDominio = tipoVersamentoDominioPersistito(idDominio, false, false, false);
+        Pendenza pendenza = pendenzaPersistita(applicazione.getId(), idDominio, idTipoVersamentoDominio,
+                "100000000000000097");
+        pendenza.setSendImportoTotale(2.00);
+        persistAndFlush(pendenza);
+        Rpt rpt = rptAccettataNodoPersistita(pendenza);
+
+        // pendenza.getImporto()=10.00 (fixture) + sendImportoTotale=2.00 = 12.00, tutto
+        // sull'unica voce (idDominio nullo, "di competenza dell'ente creditore").
+        DatiRicevutaPagamento dati = new DatiRicevutaPagamento("receipt-send", true, ADESSO, 12.00, "PSP1",
+                "Psp Uno", "ID-PSP-1", "CH-1", "BBT", "<Receipt/>".getBytes(StandardCharsets.UTF_8),
+                List.of(new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(1, 12.00)));
+
+        service.acquisisci(pendenza, rpt, dati);
+
+        assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.ESEGUITO);
+        assertThat(pendenza.isAnomalo()).isFalse();
+        assertThat(pendenza.getDescrizioneStato()).isNull();
+    }
+
+    /**
+     * Bug di revisione corretto, 2026-11-04 (issue #6): il solo confronto sul totale non
+     * rileva uno scambio fra voci di importo diverso che si compensa nel totale — voci
+     * attese da 6€ e 4€, ricevuta 5€+5€ (stesso totale, 10€) deve comunque risultare
+     * anomala sul dettaglio.
+     */
+    @Test
+    void dettaglioTrasferimentiDiversoDalPrevistoVieneMarcatoAnomaloAncheConTotaleCorretto() {
+        ApplicazioneEntity applicazione = applicazionePersistita("APP-DETTAGLIO");
+        Long idDominio = dominioPersistito("88888888888");
+        Long idTipoVersamentoDominio = tipoVersamentoDominioPersistito(idDominio, false, false, false);
+        String iuv = "100000000000000096";
+
+        PosizioneDebitoria posizione = new PosizioneDebitoria();
+        posizione.setIdApplicazione(applicazione.getId());
+        posizione.setCodDocumento("pos-" + iuv);
+        posizione.setIdDominio(idDominio);
+        posizione.setDescrizione("test");
+        posizione.setNotificaSend(false);
+        posizione.setDataCreazione(ADESSO);
+        posizione.setDataUltimoAggiornamento(ADESSO);
+        SoggettoDebitore soggetto = new SoggettoDebitore();
+        soggetto.setOrdine(0);
+        soggetto.setTipo(TipoSoggetto.F);
+        soggetto.setIdentificativo("RSSMRA80A01H501U");
+        soggetto.setEmail("debitore@test.it");
+        posizione.addSoggettoDebitore(soggetto);
+        OpzionePagamento opzione = nuovaOpzioneDisponibile();
+        posizione.addOpzionePagamento(opzione);
+        Pendenza pendenza = nuovaPendenza(applicazione.getId(), idDominio, idTipoVersamentoDominio, iuv);
+        pendenza.setImporto(10.00);
+        opzione.addPendenza(pendenza);
+        VocePendenza voce1 = new VocePendenza();
+        voce1.setIdVocePendenza("voce-" + iuv + "-1");
+        voce1.setImporto(6.00);
+        voce1.setDescrizione("voce 1");
+        voce1.setIndice(1);
+        voce1.setStato(StatoVocePendenza.NON_ESEGUITO);
+        pendenza.addVocePendenza(voce1);
+        VocePendenza voce2 = new VocePendenza();
+        voce2.setIdVocePendenza("voce-" + iuv + "-2");
+        voce2.setImporto(4.00);
+        voce2.setDescrizione("voce 2");
+        voce2.setIndice(2);
+        voce2.setStato(StatoVocePendenza.NON_ESEGUITO);
+        pendenza.addVocePendenza(voce2);
+        persistAndFlush(posizione);
+        Rpt rpt = rptAccettataNodoPersistita(pendenza);
+
+        DatiRicevutaPagamento dati = new DatiRicevutaPagamento("receipt-dettaglio", true, ADESSO, 10.00, "PSP1",
+                "Psp Uno", "ID-PSP-1", "CH-1", "BBT", "<Receipt/>".getBytes(StandardCharsets.UTF_8),
+                List.of(new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(1, 5.00),
+                        new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(2, 5.00)));
+
+        service.acquisisci(pendenza, rpt, dati);
+
+        assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.ESEGUITO);
+        assertThat(pendenza.isAnomalo()).isTrue();
+        assertThat(pendenza.getDescrizioneStato())
+                .contains("Dettaglio dei trasferimenti diverso da quello previsto dalle voci della pendenza")
+                .doesNotContain("Importo pagato diverso da quello previsto");
+    }
+
+    /**
+     * Bug di revisione corretto, 2026-11-04 (issue #6): un trasferimento a importo zero
+     * saltava del tutto il confronto con la voce attesa (il {@code continue} precedeva il
+     * controllo). Pendenza da 10€, unico voce da 10€, ricevuta con totale dichiarato 10€ ma
+     * l'unico trasferimento a 0€: cardinalita' e totale risultavano corretti e la pendenza
+     * passava a ESEGUITO senza anomalia. Ora il confronto avviene comunque, prima del
+     * {@code continue} — resta invariata solo l'esclusione del trasferimento a zero dalla
+     * creazione del Pagamento.
+     */
+    @Test
+    void trasferimentoAImportoZeroVieneComunqueConfrontatoConLaVoceAttesa() {
+        ApplicazioneEntity applicazione = applicazionePersistita("APP-ZERO");
+        Long idDominio = dominioPersistito("99999999999");
+        Long idTipoVersamentoDominio = tipoVersamentoDominioPersistito(idDominio, false, false, false);
+        Pendenza pendenza = pendenzaPersistita(applicazione.getId(), idDominio, idTipoVersamentoDominio,
+                "100000000000000095");
+        Rpt rpt = rptAccettataNodoPersistita(pendenza);
+
+        DatiRicevutaPagamento dati = new DatiRicevutaPagamento("receipt-zero", true, ADESSO, 10.00, "PSP1",
+                "Psp Uno", "ID-PSP-1", "CH-1", "BBT", "<Receipt/>".getBytes(StandardCharsets.UTF_8),
+                List.of(new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(1, 0.00)));
+
+        service.acquisisci(pendenza, rpt, dati);
+
+        assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.ESEGUITO);
+        assertThat(pendenza.isAnomalo()).isTrue();
+        assertThat(pendenza.getDescrizioneStato())
+                .contains("Dettaglio dei trasferimenti diverso da quello previsto dalle voci della pendenza")
+                .doesNotContain("Importo pagato diverso da quello previsto");
+        assertThat(pagamentoRepository.findByCodDominioAndIuv(rpt.getCodDominio(), rpt.getIuv())).isEmpty();
+    }
+
+    /**
+     * Opzione ANNULLATA (bug di revisione corretto, 2026-11-04, issue #6): capita quando
+     * un'altra opzione della stessa posizione e' stata attivata nel frattempo da un canale
+     * di pagamento concorrente. {@code registraEsitoPendenza} rifiuterebbe con {@code
+     * TransizioneStatoNonAmmessaException} (ANNULLATA e' definitivo per l'aggregato,
+     * {@code ValidatorePosizioneDebitoria#validaStati}) — qui invece si evita del tutto
+     * quella chiamata: il pagamento resta registrato (Pagamento scritto, {@code
+     * dataPagamento}/{@code importoPagato} impostati), {@code pendenza.stato} resta
+     * invariato (coerente con l'opzione ANNULLATA), solo {@code anomalo} si marca.
+     */
+    @Test
+    void ricevutaSuOpzioneAnnullataVieneAcquisitaEMarcataAnomalaSenzaRiattivareLopzione() {
+        ApplicazioneEntity applicazione = applicazionePersistita("APP-ANNULLATA");
+        Long idDominio = dominioPersistito("66666666666");
+        Long idTipoVersamentoDominio = tipoVersamentoDominioPersistito(idDominio, false, false, false);
+        Pendenza pendenza = pendenzaPersistita(applicazione.getId(), idDominio, idTipoVersamentoDominio,
+                "100000000000000098");
+        pendenza.getOpzionePagamento().setStato(StatoOpzionePagamento.ANNULLATA);
+        pendenza.setStato(StatoPendenza.ANNULLATO);
+        persistAndFlush(pendenza);
+        Rpt rpt = rptAccettataNodoPersistita(pendenza);
+
+        DatiRicevutaPagamento dati = new DatiRicevutaPagamento("receipt-annullata", true, ADESSO, 10.00, "PSP1",
+                "Psp Uno", "ID-PSP-1", "CH-1", "BBT", "<Receipt/>".getBytes(StandardCharsets.UTF_8),
+                List.of(new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(1, 10.00)));
+
+        service.acquisisci(pendenza, rpt, dati);
+
+        // Deciso con il committente, 2026-11-04: la pendenza diventa ESEGUITO (il pagamento
+        // e' realmente avvenuto), ma l'opzione resta ANNULLATA (stato definitivo per
+        // l'aggregato) — incoerenza localizzata e accettata, vedi
+        // PosizioneDebitoriaService#registraEsitoPendenzaSuOpzioneAnnullataDaCanaleConcorrente
+        // in govpay-common-pendenze e il punto aperto dedicato nel design doc.
+        assertThat(pendenza.getStato()).isEqualTo(StatoPendenza.ESEGUITO);
+        assertThat(pendenza.isAnomalo()).isTrue();
+        assertThat(pendenza.getDescrizioneStato()).isEqualTo("Ricevuta acquisita su un'opzione di pagamento gia' annullata");
+        assertThat(pendenza.getOpzionePagamento().getStato()).isEqualTo(StatoOpzionePagamento.ANNULLATA);
+        assertThat(pagamentoRepository.findByCodDominioAndIuv(rpt.getCodDominio(), rpt.getIuv())).hasSize(1);
+    }
+
+    /**
      * Un pagamento rendicontato PRIMA dell'arrivo della ricevuta ({@code stato =
      * PAGATO_SENZA_RPT}, nessuna RPT collegata) viene aggiornato e collegato qui, non
      * duplicato — stesso comportamento del legacy ({@code CtReceiptUtils.acquisisciRT}:

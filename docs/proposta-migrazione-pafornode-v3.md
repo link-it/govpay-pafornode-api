@@ -1319,6 +1319,131 @@ Fuori perimetro di queste tre fasi: Fase 5 (changelog/README/note di rilascio �
 aggiornato separatamente), cancellazione di eventuali RPT pregresse senza ricevuta
 (esplicitamente escluso dall'issue), modello 1/WISP e `paaInviaRT`.
 
+## 3unvicies. Issue #6: 6 difetti trovati in revisione, tutti corretti (2026-11-04)
+
+Revisione esterna sul lavoro di §3vicies, non su segnalazione interna: 6 difetti, tutti
+confermati leggendo il codice (nessun falso positivo) e tutti risolti nella stessa sessione,
+195/195 test verdi. Nessuna modifica a `govpay-common-pendenze` (il punto 3 sotto, che
+sembrava richiederla, si e' risolto senza).
+
+1. **Seconda ricevuta (`receiptId` diverso) rifiutata**: `PaSendRTService` ereditava da
+   `§3undecies` (punto aperto #14, pre-#6) un controllo — "se esiste gia' una RPT per questa
+   pendenza, resta `PAA_RPT_SCONOSCIUTA`, non si ricostruisce una seconda volta" — che aveva
+   senso quando lo standin era un caso di minoranza (un'RPT esistente implicava
+   un'attivazione reale passata da `paGetPayment`). Dalla Fase 3 (nessuna RPT scritta
+   all'attivazione) lo standin e' l'UNICO percorso: quel controllo bloccava sistematicamente
+   qualunque seconda ricevuta, anche con `receiptId` diverso (es. due canali di pagamento
+   concorrenti). **Fix**: rimosso del tutto — si ricostruisce sempre una nuova RPT quando
+   nessuna e' "in attesa"; `PAA_RPT_SCONOSCIUTA` non e' piu' raggiungibile da questo servizio.
+2. **Nessun confronto con l'importo atteso dalla pendenza**: senza `xmlRpt` (percorso
+   standin) nessuna validazione a monte confrontava l'importo della ricevuta con quello
+   della pendenza — una ricevuta parziale veniva acquisita silenziosamente come se fosse
+   completa. **Fix**: `AcquisizioneRicevutaService#acquisisci` confronta ora
+   `dati.importoTotalePagato()` con `pendenza.getImporto()` (tolleranza 0.005, arrotondamenti
+   double); se diverso, l'acquisizione procede comunque ma la pendenza va `anomalo=true`.
+3. **Ricevuta su opzione ANNULLATA**: capita quando un'altra opzione della stessa posizione
+   e' stata attivata nel frattempo da un canale di pagamento concorrente.
+   `PosizioneDebitoriaService#registraEsitoPendenza` (govpay-common-pendenze) rifiuta
+   esplicitamente questo caso (`TransizioneStatoNonAmmessaException`, ANNULLATA e' uno stato
+   DEFINITIVO per l'aggregato) — l'eccezione, non catturata, faceva perdere il pagamento con
+   un `PAA_SYSTEM_ERROR` generico. **Prima soluzione** (stessa sessione, poi rivista): evitare
+   del tutto `registraEsitoPendenza`, lasciando `pendenza.stato` invariato (coerente con
+   l'opzione ANNULLATA) e marcando solo `anomalo=true` — nessuna modifica alla libreria.
+   **Soluzione finale, dopo indicazione esterna ricevuta dal committente**: la pendenza deve
+   invece diventare `ESEGUITO` (il pagamento e' realmente avvenuto), non restare `ANNULLATO`.
+   Questo richiede di toccare `govpay-common-pendenze`: nuovo metodo dedicato
+   `PosizioneDebitoriaService#registraEsitoPendenzaSuOpzioneAnnullataDaCanaleConcorrente`
+   (nome esplicito apposta, deciso con il committente — non un `registraEsitoPendenza` piu'
+   permissivo per uso generale, rifiuta se l'opzione NON e' ANNULLATA), che porta la pendenza
+   a `nuovoStato` e marca `anomalo=true`+`descrizioneStato` SENZA chiamare `attiva(UUID)` (
+   l'opzione resta ANNULLATA, stato definitivo) e SENZA chiamare
+   `ValidatorePosizioneDebitoria#validaStati` — l'incoerenza che quel validatore impedirebbe
+   (un'opzione ANNULLATA con una pendenza non-ANNULLATO al suo interno) e' qui deliberata e
+   accettata, non un bug. **Conseguenza nota, segnalata come punto aperto #23**: un consumer
+   che filtra le opzioni per il loro stato (es. `GetPaymentOptionsService`, issue #4, che
+   esclude le ANNULLATA a monte) non vedra' mai questa pendenza, pur essendo pagata.
+4. **Traduzione del duplicato dentro una transazione gia' compromessa**:
+   `RptAttivazioneService#creaOrfana` e' `@Transactional` e partecipa alla stessa
+   transazione di `PaSendRTService#eseguiSendRT`/`V2` — quando lancia
+   `DataIntegrityViolationException` per la violazione del vincolo unique su `rpt`, il proxy
+   Spring marca GIA' quella transazione rollback-only prima che un catch nel service possa
+   tradurla in `NdpException`; il successivo tentativo di commit (per
+   `noRollbackFor=NdpException.class`) produceva `UnexpectedRollbackException`, perdendo
+   `PAA_RECEIPT_DUPLICATA`. **Fix**: l'eccezione non viene piu' catturata nel service — si
+   lascia propagare (rollback normale, corretto: nulla da preservare), la traduzione in
+   `PAA_RECEIPT_DUPLICATA` avviene in `PaForNodeEndpoint`, fuori da qualunque transazione.
+   Nuovo `PaForNodeEndpointFaultMappingTest` (unit, mock su `PaSendRTService`) verifica la
+   mappatura — una vera race a due thread non e' riproducibile deterministicamente in un
+   test.
+5. **Stazione di default invece di quella della richiesta**: `RptAttivazioneService
+   #ricostruisci` (percorso standin CON pendenza nota) usava ancora
+   `DominioEntity#getStazione()`, inconsistente con `#creaOrfana` (percorso senza pendenza,
+   gia' corretto) e con l'issue #6, che ammette esplicitamente stazioni diverse da quella di
+   default anche con pendenza nota. **Fix**: nuovo parametro `codStazioneRichiesta`,
+   propagato da `PaSendRTService` (gia' validato da `verificaAutorizzazione`, nessun
+   controllo di nullita' necessario) fino a `ricostruisci`; rimosso il vecchio controllo
+   "dominio senza stazione di default" (non serve piu').
+6. **`validFrom` con semantica invertita** (issue #4, non #6):
+   `OpzionePagamentoResponseMapper` usava `Pendenza#getDataValidita()` per popolare
+   `Installment.validFrom` — ma quel campo e' il limite SUPERIORE di validita' prima
+   dell'attualizzazione (stesso campo mappato su `dueDate` in
+   `PaVerifyPaymentNoticeService`, usato come tale anche in
+   `AttualizzazionePendenzaService`/`DueDateCalculator`), non un inizio validita'. **Fix**:
+   campo omesso (opzionale nello schema pagoPA, nessun equivalente "inizio validita'" per
+   singola rata nel modello).
+
+## 3duovicies. Issue #6: terzo giro di revisione, 3 ulteriori difetti corretti (2026-11-04)
+
+Stessa sessione di §3unvicies, nuova revisione sul confronto con la pendenza (punto 2 di
+quella sezione) e sulla mappatura del duplicato (punto 4). Tutti confermati, 199/199 test
+verdi.
+
+1. **Confronto sul totale senza la quota SEND**: il confronto aggiunto in §3unvicies punto 2
+   (`dati.importoTotalePagato()` contro `pendenza.getImporto()`) ignorava che
+   `CtPaymentPaBuilder`/`CtPaymentPaV2Builder#costruisci` aggiungono
+   `pendenza.getSendImportoTotale()` all'importo esposto al Nodo (`importoTotaleConSend`) —
+   una pendenza da 10€ con 2€ di SEND, pagata correttamente per 12€, risultava anomala.
+   **Fix**: nuovo `AcquisizioneRicevutaService#importoAttesoConSend`, stessa somma del
+   builder (non riusabile direttamente: metodo privato in una classe diversa).
+2. **Nessun confronto per singola voce**: il solo confronto sul totale non rileva uno
+   scambio fra voci di importo diverso che si compensa nel totale (voci 6€+4€, ricevuta
+   5€+5€, stesso totale 10€). **Fix**: nuovo controllo per ogni trasferimento —
+   cardinalita' (stesso numero di trasferimenti e voci), identificativo (`idTransfer`
+   atteso = posizione+1, stessa numerazione di `CtPaymentPaBuilder`) e importo, quest'ultimo
+   con un'eccezione prevista: la voce che porta la quota SEND (la PRIMA di competenza
+   dell'ente creditore, stessa regola di assegnazione del builder — `idDominio` nullo o
+   coincidente) puo' legittimamente eccedere il proprio `importo` esattamente della quota
+   SEND. Nuovo `AcquisizioneRicevutaService#importoAttesoVoce`, che replica quella singola
+   regola di assegnazione senza duplicare l'intero builder.
+3. **Mappatura del duplicato troppo larga**: il catch dedicato di `PaForNodeEndpoint`
+   (§3unvicies punto 4) intercettava QUALUNQUE `DataIntegrityViolationException` — una
+   violazione di FK, NOT NULL o di un vincolo diverso da quello di `rpt` non significa
+   "ricevuta gia' acquisita", ma veniva comunque mappata su `PAA_RECEIPT_DUPLICATA`. **Fix**:
+   nuovo `vincolaRptGiaAcquisita`, verifica che il nome del vincolo
+   (`unique_rpt_id_transazione`) compaia nel messaggio della causa piu' specifica — presente
+   testualmente sia su H2 (test) sia su PostgreSQL (produzione), nessuna ispezione del
+   dialetto necessaria. Qualunque altra violazione resta `PAA_SYSTEM_ERROR`.
+
+## 3trevicies. Issue #6: quarto difetto corretto, trasferimenti a importo zero (2026-11-04)
+
+Stessa sessione di §3unvicies/§3duovicies, quarta segnalazione. 200/200 test verdi.
+
+1. **Trasferimenti a importo zero saltavano la validazione**: nel ciclo per-trasferimento
+   introdotto in §3duovicies punto 2, il `continue` che esclude i trasferimenti a importo
+   zero dalla creazione del `Pagamento` precedeva il confronto con la voce attesa
+   (identificativo e importo). Una pendenza da 10€ con un'unica voce, ricevuta con totale
+   dichiarato 10€ ma l'unico trasferimento a 0€: cardinalità (1 trasferimento, 1 voce) e
+   totale (10€ dichiarato) risultavano corretti, il trasferimento veniva ignorato dal
+   `continue` e la pendenza passava a `ESEGUITO` senza alcuna anomalia, nonostante nessun
+   importo reale fosse stato effettivamente versato. **Fix**: il confronto
+   identificativo/importo ora avviene per OGNI trasferimento, prima del `continue` — solo
+   la creazione/aggiornamento del `Pagamento` resta esclusa per i trasferimenti a importo
+   zero (comportamento preesistente, invariato). Nuovo test
+   `trasferimentoAImportoZeroVieneComunqueConfrontatoConLaVoceAttesa`
+   (`AcquisizioneRicevutaServiceTest`): pendenza 10€/voce 10€, ricevuta con totale dichiarato
+   10€ e unico trasferimento a 0€ → `anomalo=true`, nota di dettaglio presente, nessun
+   `Pagamento` creato.
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,
@@ -1486,3 +1611,15 @@ aggiornato separatamente), cancellazione di eventuali RPT pregresse senza ricevu
     l'implementazione per coerenza con "nessuna pendenza fittizia" (nessuna applicazione ha
     davvero avviato questa transazione tramite GovPay). Segnalato successivamente come da
     riconfermare, non una decisione definitiva: va rivista prima del rilascio.
+23. **Pendenza ESEGUITO con opzione ancora ANNULLATA** (issue #6, §3unvicies, 2026-11-04):
+    `PosizioneDebitoriaService#registraEsitoPendenzaSuOpzioneAnnullataDaCanaleConcorrente`
+    (govpay-common-pendenze) produce deliberatamente un aggregato con un'incoerenza
+    localizzata — un'opzione `ANNULLATA` con una pendenza `ESEGUITO` al suo interno, invece
+    di `ANNULLATO` come le sue "sorelle" — per preservare un pagamento realmente avvenuto
+    secondo pagoPA su un canale concorrente a quello che ha vinto la corsa. Conseguenza nota
+    e accettata nell'immediato, ma non ancora confermata come decisione definitiva di lungo
+    periodo: un consumer che filtra le opzioni per il loro stato (es.
+    `GetPaymentOptionsService`, issue #4, che esclude le `ANNULLATA` a monte) non vedra' mai
+    questa pendenza, pur essendo pagata — da verificare se e come rendere visibile questo
+    caso (es. un flag dedicato, o un'eccezione al filtro per le opzioni con almeno una
+    pendenza anomala) prima del rilascio.

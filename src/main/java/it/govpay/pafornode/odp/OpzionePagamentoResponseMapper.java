@@ -69,11 +69,21 @@ final class OpzionePagamentoResponseMapper {
 				.status(statoOpzione(opzione, oggi)).allCCP(false).installments(installments);
 	}
 
+	/**
+	 * Nessun {@code validFrom}: {@code Pendenza#getDataValidita()} non e' un inizio
+	 * validita', e' il limite SUPERIORE prima dell'attualizzazione (stesso campo mappato su
+	 * {@code dueDate} in {@code PaVerifyPaymentNoticeService}, usato come tale anche in
+	 * {@code AttualizzazionePendenzaService}/{@code DueDateCalculator}) — usarlo qui
+	 * invertirebbe la semantica del campo (bug trovato in revisione, 2026-11-04). Non esiste
+	 * un equivalente "inizio validita'" per singola rata nel modello; il campo e' opzionale
+	 * nello schema pagoPA (nessuna voce in {@code required} su {@code Installment}), quindi
+	 * si omette piuttosto che inventare un valore.
+	 */
 	private static Installment mappaInstallment(Pendenza pendenza, LocalDate oggi) {
 		long importo = centesimi(importoConSend(pendenza));
 		return new Installment().nav(pendenza.getNumeroAvviso()).iuv(pendenza.getIuv()).amount(importo)
 				.description(descrizione(pendenza)).dueDate(pendenza.getDataScadenzaAvviso())
-				.validFrom(pendenza.getDataValidita()).status(statoInstallment(pendenza, oggi));
+				.status(statoInstallment(pendenza, oggi));
 	}
 
 	private static EnumPo statoOpzione(OpzionePagamento opzione, LocalDate oggi) {

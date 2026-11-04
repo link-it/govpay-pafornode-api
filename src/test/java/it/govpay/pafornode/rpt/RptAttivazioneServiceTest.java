@@ -1,7 +1,6 @@
 package it.govpay.pafornode.rpt;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.OffsetDateTime;
 
@@ -11,7 +10,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import it.govpay.common.entity.DominioEntity;
-import it.govpay.common.entity.StazioneEntity;
 import it.govpay.pafornode.Application;
 import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
 import it.govpay.pendenze.entity.OpzionePagamento;
@@ -86,28 +84,28 @@ class RptAttivazioneServiceTest {
 		return dominio;
 	}
 
-	private StazioneEntity stazione() {
-		StazioneEntity stazione = new StazioneEntity();
-		stazione.setCodStazione("STAZIONE-TEST");
-		return stazione;
-	}
-
+	/**
+	 * {@code codStazione} e' quella della richiesta ({@code codStazioneRichiesta}), non
+	 * quella (eventuale) di default del dominio — bug di revisione corretto, 2026-11-04,
+	 * issue #6: ammette esplicitamente stazioni diverse da quella di default anche con
+	 * pendenza nota. Il dominio di fixture non ha nemmeno una stazione di default
+	 * impostata, apposta: dimostra che non serve piu'.
+	 */
 	@Test
 	void ricostruisceUnaRptStandinSenzaXmlRpt() {
 		Pendenza pendenza = pendenzaPersistita("00000000000000000003");
 		DominioEntity dominio = dominio();
-		dominio.setStazione(stazione());
 		OffsetDateTime dataPagamento = OffsetDateTime.now().minusMinutes(5);
 
-		Rpt rpt = service.ricostruisci(pendenza, dominio, RptAttivazioneService.VERSIONE_SANP_240, "receipt-standin",
-				dataPagamento);
+		Rpt rpt = service.ricostruisci(pendenza, dominio, "STAZIONE-RICHIESTA", RptAttivazioneService.VERSIONE_SANP_240,
+				"receipt-standin", dataPagamento);
 
 		assertThat(rpt.getId()).isNotNull();
 		assertThat(rpt.getIdVersamento()).isEqualTo(pendenza.getId());
 		assertThat(rpt.getIuv()).isEqualTo(pendenza.getIuv());
 		assertThat(rpt.getIur()).isEqualTo("receipt-standin");
 		assertThat(rpt.getCodDominio()).isEqualTo(dominio.getCodDominio());
-		assertThat(rpt.getCodStazione()).isEqualTo(stazione().getCodStazione());
+		assertThat(rpt.getCodStazione()).isEqualTo("STAZIONE-RICHIESTA");
 		assertThat(rpt.getCodMsgRichiesta()).isEqualTo("receipt-standin");
 		assertThat(rpt.getVersione()).isEqualTo(RptAttivazioneService.VERSIONE_SANP_240);
 		assertThat(rpt.getStato()).isEqualTo(StatoRpt.RPT_ACCETTATA_NODO.name());
@@ -121,20 +119,10 @@ class RptAttivazioneServiceTest {
 	void ricostruisceConDataMsgRichiestaAdessoSeDataPagamentoAssente() {
 		Pendenza pendenza = pendenzaPersistita("00000000000000000004");
 		DominioEntity dominio = dominio();
-		dominio.setStazione(stazione());
 
-		Rpt rpt = service.ricostruisci(pendenza, dominio, RptAttivazioneService.VERSIONE_SANP_321_V2,
-				"receipt-standin-2", null);
+		Rpt rpt = service.ricostruisci(pendenza, dominio, "STAZIONE-RICHIESTA",
+				RptAttivazioneService.VERSIONE_SANP_321_V2, "receipt-standin-2", null);
 
 		assertThat(rpt.getDataMsgRichiesta()).isNotNull();
-	}
-
-	@Test
-	void rifiutaSeIlDominioNonHaUnaStazioneDiDefault() {
-		Pendenza pendenza = pendenzaPersistita("00000000000000000005");
-		DominioEntity dominio = dominio();
-
-		assertThatThrownBy(() -> service.ricostruisci(pendenza, dominio, RptAttivazioneService.VERSIONE_SANP_240,
-				"receipt-standin-3", null)).isInstanceOf(IllegalStateException.class);
 	}
 }

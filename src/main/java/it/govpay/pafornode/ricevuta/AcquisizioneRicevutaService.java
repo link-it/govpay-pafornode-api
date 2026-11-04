@@ -2,6 +2,7 @@ package it.govpay.pafornode.ricevuta;
 
 import java.time.Clock;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -18,6 +19,7 @@ import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
 import it.govpay.pendenze.entity.SoggettoDebitore;
 import it.govpay.pendenze.entity.VocePendenza;
+import it.govpay.pendenze.model.StatoOpzionePagamento;
 import it.govpay.pendenze.model.StatoPagamento;
 import it.govpay.pendenze.model.StatoPagamentoRicevuta;
 import it.govpay.pendenze.model.StatoPendenza;
@@ -155,13 +157,46 @@ public class AcquisizioneRicevutaService {
         StatoPendenza statoPrecedente = pendenza.getStato();
         List<VocePendenza> voci = pendenza.getVoci();
         List<DatiRicevutaPagamento.DatiTrasferimentoRicevuto> trasferimenti = dati.trasferimenti();
+        // Indice (0-based, in 'voci') della voce che si attende porti la quota SEND, stessa
+        // regola di CtPaymentPaBuilder/V2Builder#costruisci: la PRIMA voce di competenza
+        // dell'ente creditore (idDominio nullo o uguale a quello della pendenza). -1 se
+        // nessuna quota SEND prevista.
+        int indiceVoceSend = -1;
+        if (pendenza.getSendImportoTotale() != null) {
+            for (int i = 0; i < voci.size(); i++) {
+                VocePendenza v = voci.get(i);
+                if (v.getIdDominio() == null || v.getIdDominio().equals(pendenza.getIdDominio())) {
+                    indiceVoceSend = i;
+                    break;
+                }
+            }
+        }
+        // Confronto per singola voce richiesto dalla Fase 4 dell'issue #6 (bug di revisione
+        // corretto, 2026-11-04): il solo confronto sul totale (sopra) non rileva uno scambio
+        // fra voci di importo diverso che si compensa nel totale (es. voci 6€+4€, ricevuta
+        // 5€+5€) — cardinalita' (stesso numero di trasferimenti e voci), identificativo
+        // (idTransfer atteso = posizione+1, stessa numerazione del builder) e importo
+        // (incluso lo scostamento ammesso sulla voce che porta la quota SEND).
+        boolean dettaglioTrasferimentiNonCorrispondente = trasferimenti.size() != voci.size();
         boolean irregolare = false;
         for (int indice = 0; indice < trasferimenti.size(); indice++) {
             DatiRicevutaPagamento.DatiTrasferimentoRicevuto trasferimento = trasferimenti.get(indice);
+            VocePendenza voce = indice < voci.size() ? voci.get(indice) : null;
+            // Controllo PRIMA del continue sui trasferimenti a importo zero (bug di
+            // revisione corretto, 2026-11-04): altrimenti un trasferimento a 0€ su una voce
+            // che si attende pagata non viene mai confrontato — una ricevuta OK con totale
+            // dichiarato corretto (coincidenza o dolo) ma un unico trasferimento a 0€
+            // passava cardinalita'/totale e portava la pendenza a ESEGUITO senza anomalia.
+            // L'esclusione dei trasferimenti a zero dalla creazione del Pagamento (sotto)
+            // resta invariata — qui si cambia solo QUANDO si confronta, non cosa si crea.
+            if (voce == null || trasferimento.idTransfer() != indice + 1
+                    || Math.abs(trasferimento.transferAmount() - importoAttesoVoce(voce, indice, indiceVoceSend,
+                            pendenza)) > 0.005) {
+                dettaglioTrasferimentiNonCorrispondente = true;
+            }
             if (trasferimento.transferAmount() == 0d) {
                 continue;
             }
-            VocePendenza voce = indice < voci.size() ? voci.get(indice) : null;
 
             Optional<Pagamento> esistente = pagamentoRepository
                     .findByCodDominioAndIuv(rpt.getCodDominio(), rpt.getIuv()).stream()
@@ -211,9 +246,7 @@ public class AcquisizioneRicevutaService {
         pendenza.setDataPagamento(dati.dataPagamento() != null ? dati.dataPagamento() : adesso);
         pendenza.setImportoPagato(dati.importoTotalePagato());
         pendenza.setStatoPagamento(StatoPagamento.PAGATO);
-        if (irregolare) {
-            pendenza.setDescrizioneStato("Acquisito pagamento duplicato");
-        }
+
         // Anomalo anche quando la pendenza era gia' in uno stato diverso da
         // NON_ESEGUITO/ANNULLATO prima di questa acquisizione, a prescindere da
         // 'irregolare' (es. tutti i trasferimenti gia' INCASSATI: nessun Pagamento
@@ -221,11 +254,61 @@ public class AcquisizioneRicevutaService {
         // conclusa).
         boolean giaEseguita = statoPrecedente != StatoPendenza.NON_ESEGUITO
                 && statoPrecedente != StatoPendenza.ANNULLATO;
-        if (irregolare || giaEseguita) {
+        // Confronto con la pendenza richiesto dalla Fase 4 dell'issue #6 (bug di revisione
+        // corretto, 2026-11-04): senza xmlRpt (percorso standin, ora universale) non c'e'
+        // nessuna validazione semantica a monte che confronti l'importo della ricevuta con
+        // quello atteso dalla pendenza — una ricevuta parziale (es. 5 euro su una pendenza
+        // da 10) veniva acquisita e portava la pendenza a ESEGUITO senza alcuna segnalazione.
+        // Non si rifiuta: si mantiene comunque l'acquisizione (il pagamento e' realmente
+        // avvenuto secondo pagoPA) e si marca anomala, stessa logica degli altri casi qui.
+        // L'importo atteso include la quota SEND (bug di revisione corretto, 2026-11-04:
+        // CtPaymentPaBuilder/V2Builder la aggiungono all'importo esposto al Nodo — una
+        // pendenza da 10€ con 2€ di SEND, pagata correttamente per 12€, risultava anomala
+        // confrontando solo contro pendenza.getImporto()).
+        boolean importoNonCorrispondente = Math.abs(dati.importoTotalePagato() - importoAttesoConSend(pendenza)) > 0.005;
+        boolean opzioneAnnullataDaCanaleConcorrente = pendenza.getOpzionePagamento()
+                .getStato() == StatoOpzionePagamento.ANNULLATA;
+        List<String> note = new ArrayList<>();
+        if (irregolare) {
+            note.add("Acquisito pagamento duplicato");
+        }
+        if (importoNonCorrispondente) {
+            note.add("Importo pagato diverso da quello previsto");
+        }
+        if (dettaglioTrasferimentiNonCorrispondente) {
+            note.add("Dettaglio dei trasferimenti diverso da quello previsto dalle voci della pendenza");
+        }
+        if (opzioneAnnullataDaCanaleConcorrente) {
+            note.add("Ricevuta acquisita su un'opzione di pagamento gia' annullata");
+        }
+        if (irregolare || giaEseguita || importoNonCorrispondente || dettaglioTrasferimentiNonCorrispondente
+                || opzioneAnnullataDaCanaleConcorrente) {
             pendenza.setAnomalo(true);
         }
-        posizioneDebitoriaService.registraEsitoPendenza(risolviCodApplicazione(pendenza.getIdApplicazione()),
-                pendenza.getIdPendenza(), StatoPendenza.ESEGUITO);
+
+        // Opzione ANNULLATA (deciso con il committente, 2026-11-04, issue #6): capita
+        // quando un'altra opzione della stessa posizione e' stata attivata nel frattempo da
+        // un canale di pagamento concorrente. registraEsitoPendenza rifiuta sempre questo
+        // caso (ANNULLATA e' uno stato DEFINITIVO dell'aggregato,
+        // ValidatorePosizioneDebitoria#validaStati impone che tutte le sue pendenze siano
+        // ANNULLATO) — qui si vuole invece preservare il pagamento realmente avvenuto, non
+        // perderlo: nuovo metodo dedicato in govpay-common-pendenze, deliberatamente
+        // riservato a questo solo caso d'uso (il nome lo dice), che porta QUESTA pendenza a
+        // ESEGUITO lasciando l'opzione ANNULLATA — un'incoerenza LOCALIZZATA e ACCETTATA
+        // (vedi Javadoc del metodo in govpay-common-pendenze e punto aperto dedicato nel
+        // design doc: questa pendenza non comparira' nelle opzioni restituite da chi filtra
+        // per stato dell'opzione, es. GetPaymentOptionsService).
+        if (opzioneAnnullataDaCanaleConcorrente) {
+            posizioneDebitoriaService.registraEsitoPendenzaSuOpzioneAnnullataDaCanaleConcorrente(
+                    risolviCodApplicazione(pendenza.getIdApplicazione()), pendenza.getIdPendenza(),
+                    StatoPendenza.ESEGUITO, String.join("; ", note));
+        } else {
+            if (!note.isEmpty()) {
+                pendenza.setDescrizioneStato(String.join("; ", note));
+            }
+            posizioneDebitoriaService.registraEsitoPendenza(risolviCodApplicazione(pendenza.getIdApplicazione()),
+                    pendenza.getIdPendenza(), StatoPendenza.ESEGUITO);
+        }
 
         accodaAvvisatura(pendenza, rpt, adesso);
         notificaAttivazioneService.accodaRicevuta(pendenza, rpt);
@@ -327,6 +410,34 @@ public class AcquisizioneRicevutaService {
             return TipoPagamento.MBT;
         }
         return TipoPagamento.ENTRATA;
+    }
+
+    /**
+     * Importo complessivo atteso dal Nodo per questa pendenza, quota SEND incluso — stessa
+     * regola di {@code CtPaymentPaBuilder}/{@code CtPaymentPaV2Builder#costruisci}
+     * ({@code importoTotaleConSend}), non duplicabile da qui (classi diverse, metodi
+     * privati): {@code pendenza.getImporto()} da solo non rappresenta l'importo
+     * effettivamente richiesto quando e' presente una quota SEND.
+     */
+    private static double importoAttesoConSend(Pendenza pendenza) {
+        return pendenza.getSendImportoTotale() != null ? pendenza.getImporto() + pendenza.getSendImportoTotale()
+                : pendenza.getImporto();
+    }
+
+    /**
+     * Importo atteso per il trasferimento alla posizione {@code indice} (0-based, in
+     * {@code voci}): quello della voce, con la quota SEND aggiunta SOLO se {@code indice}
+     * e' {@code indiceVoceSend} (la prima voce di competenza dell'ente creditore, stessa
+     * regola di assegnazione dei builder — vedi {@link #importoAttesoConSend}). Senza
+     * questa distinzione, un confronto "voce.getImporto() == trasferimento" segnalerebbe
+     * erroneamente come anomala proprio la voce che porta la quota SEND.
+     */
+    private static double importoAttesoVoce(VocePendenza voce, int indice, int indiceVoceSend, Pendenza pendenza) {
+        double importo = voce.getImporto();
+        if (indice == indiceVoceSend) {
+            importo += pendenza.getSendImportoTotale();
+        }
+        return importo;
     }
 
     /**

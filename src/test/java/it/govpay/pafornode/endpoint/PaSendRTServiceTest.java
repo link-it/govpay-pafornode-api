@@ -195,9 +195,14 @@ class PaSendRTServiceTest {
 		when(rptAttivazioneService.creaOrfana(any(), any(), any(), any(), any(), any(), any()))
 				.thenThrow(new DataIntegrityViolationException("unique_rpt_id_transazione"));
 
+		// Propaga grezza, NON tradotta in NdpException qui (bug di revisione corretto,
+		// 2026-11-04): creaOrfana e' @Transactional e partecipa alla stessa transazione di
+		// eseguiSendRT — un catch-e-traduci qui arriverebbe dopo che quella transazione e'
+		// gia' stata marcata rollback-only, causando UnexpectedRollbackException al commit
+		// invece del fault. La traduzione in PAA_RECEIPT_DUPLICATA avviene fuori da
+		// qualunque transazione, in PaForNodeEndpoint (vedi PaForNodeEndpointFaultMappingTest).
 		assertThatThrownBy(() -> service.eseguiSendRT(richiesta("receipt-1")))
-				.isInstanceOf(NdpException.class)
-				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RECEIPT_DUPLICATA);
+				.isInstanceOf(DataIntegrityViolationException.class);
 		verify(acquisizioneRicevutaService, never()).acquisisciSenzaPendenza(any(), any());
 	}
 
@@ -255,13 +260,17 @@ class PaSendRTServiceTest {
 	}
 
 	/**
-	 * A differenza di {@link #ricostruisceStandinSeNonEsisteNessunaRptDelModelloPsp}: qui
-	 * esiste GIA' una RPT del modello {@code ATTIVATO_PRESSO_PSP} per questa pendenza (solo
-	 * in un altro stato) — lo standin non si applica (vedi Javadoc di classe di
-	 * {@link PaSendRTService}), resta {@code PAA_RPT_SCONOSCIUTA}.
+	 * Bug di revisione corretto, 2026-11-04 (issue #6): a differenza del comportamento
+	 * precedente, una RPT del modello {@code ATTIVATO_PRESSO_PSP} GIA' esistente per questa
+	 * pendenza (in un altro stato — es. una ricevuta precedente gia' acquisita da un canale
+	 * concorrente) non blocca piu' una nuova ricostruzione "standin": la seconda ricevuta va
+	 * acquisita comunque (su una RPT NUOVA, {@code ricostruisci} ne crea sempre una), non
+	 * rifiutata con {@code PAA_RPT_SCONOSCIUTA}. L'eventuale marcatura anomala della pendenza
+	 * e' responsabilita' di {@code AcquisizioneRicevutaService#acquisisci}, non testata qui
+	 * (mock).
 	 */
 	@Test
-	void rifiutaConRptSconosciutaSeEsisteGiaUnaRptDelModelloPspInAltroStato() {
+	void ricostruisceUnaNuovaRptAncheSeEsisteGiaUnaRptDelModelloPspInAltroStato() {
 		mockAutorizzazioneOk();
 		Pendenza pendenza = new Pendenza();
 		pendenza.setId(1L);
@@ -271,12 +280,13 @@ class PaSendRTServiceTest {
 		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
 		when(rptRepository.findByIdVersamentoAndStatoAndModelloPagamento(1L, "RPT_ACCETTATA_NODO",
 				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(Optional.empty());
-		when(rptRepository.existsByIdVersamentoAndModelloPagamento(1L,
-				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(true);
+		Rpt rptSeconda = new Rpt();
+		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
+				eq("receipt-1"), any())).thenReturn(rptSeconda);
 
-		assertThatThrownBy(() -> service.eseguiSendRT(richiesta("receipt-1")))
-				.isInstanceOf(NdpException.class)
-				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RPT_SCONOSCIUTA);
+		service.eseguiSendRT(richiesta("receipt-1"));
+
+		verify(acquisizioneRicevutaService).acquisisci(eq(pendenza), eq(rptSeconda), any(DatiRicevutaPagamento.class));
 	}
 
 	/**
@@ -304,7 +314,7 @@ class PaSendRTServiceTest {
 		when(rptRepository.existsByIdVersamentoAndModelloPagamento(1L,
 				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(false);
 		Rpt rptStandin = new Rpt();
-		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
+		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
 				eq("receipt-1"), any())).thenReturn(rptStandin);
 
 		service.eseguiSendRT(richiesta("receipt-1"));
@@ -332,7 +342,7 @@ class PaSendRTServiceTest {
 		when(rptRepository.existsByIdVersamentoAndModelloPagamento(1L,
 				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(false);
 		Rpt rptStandin = new Rpt();
-		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
+		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
 				eq("receipt-1"), any())).thenReturn(rptStandin);
 
 		service.eseguiSendRT(richiesta("receipt-1"));
@@ -360,7 +370,7 @@ class PaSendRTServiceTest {
 		when(rptRepository.existsByIdVersamentoAndModelloPagamento(1L,
 				RptAttivazioneService.MODELLO_PAGAMENTO_ATTIVATO_PRESSO_PSP)).thenReturn(false);
 		Rpt rptStandin = new Rpt();
-		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
+		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), any(), eq(RptAttivazioneService.VERSIONE_SANP_240),
 				eq("receipt-1"), any())).thenReturn(rptStandin);
 
 		service.eseguiSendRT(richiesta("receipt-1"));
@@ -386,7 +396,7 @@ class PaSendRTServiceTest {
 		when(rptRepository.findByIdVersamentoAndStato(1L, "RPT_ACCETTATA_NODO")).thenReturn(Optional.empty());
 		when(rptRepository.existsByIdVersamento(1L)).thenReturn(false);
 		Rpt rptStandin = new Rpt();
-		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), eq(RptAttivazioneService.VERSIONE_SANP_321_V2),
+		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), any(), eq(RptAttivazioneService.VERSIONE_SANP_321_V2),
 				eq("receipt-1"), any())).thenReturn(rptStandin);
 
 		service.eseguiSendRTV2(richiestaV2("receipt-1"));
@@ -396,12 +406,12 @@ class PaSendRTServiceTest {
 	}
 
 	/**
-	 * Asimmetria col caso V1 ({@link #ricostruisceStandinSeEsisteSoloUnaRptDiUnAltroModello}):
-	 * su {@code paSendRTV2} una RPT di un ALTRO modello BLOCCA lo standin (il legacy, qui,
-	 * non filtra per modello — {@code rptBD.getRpt(codDominio, iuv, null, null)}).
+	 * Come {@link #ricostruisceUnaNuovaRptAncheSeEsisteGiaUnaRptDelModelloPspInAltroStato},
+	 * per {@code paSendRTV2}: una RPT di un ALTRO modello gia' esistente non blocca piu' la
+	 * ricostruzione.
 	 */
 	@Test
-	void rifiutaConRptSconosciutaV2SeEsisteGiaUnaRptDiAltroModello() {
+	void ricostruisceUnaNuovaRptV2AncheSeEsisteGiaUnaRptDiAltroModello() {
 		mockAutorizzazioneOk();
 		Pendenza pendenza = new Pendenza();
 		pendenza.setId(1L);
@@ -410,11 +420,13 @@ class PaSendRTServiceTest {
 		when(pendenzaRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pendenza));
 		when(rptRepository.findByCodDominioAndIuvAndIur(any(), any(), any())).thenReturn(Optional.empty());
 		when(rptRepository.findByIdVersamentoAndStato(1L, "RPT_ACCETTATA_NODO")).thenReturn(Optional.empty());
-		when(rptRepository.existsByIdVersamento(1L)).thenReturn(true);
+		Rpt rptSeconda = new Rpt();
+		when(rptAttivazioneService.ricostruisci(eq(pendenza), any(), any(),
+				eq(RptAttivazioneService.VERSIONE_SANP_321_V2), eq("receipt-1"), any())).thenReturn(rptSeconda);
 
-		assertThatThrownBy(() -> service.eseguiSendRTV2(richiestaV2("receipt-1")))
-				.isInstanceOf(NdpException.class)
-				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_RPT_SCONOSCIUTA);
+		service.eseguiSendRTV2(richiestaV2("receipt-1"));
+
+		verify(acquisizioneRicevutaService).acquisisci(eq(pendenza), eq(rptSeconda), any(DatiRicevutaPagamento.class));
 	}
 
 	/**

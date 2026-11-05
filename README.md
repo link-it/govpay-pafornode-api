@@ -28,19 +28,27 @@ Operazioni esposte (contratto in [src/main/resources/xsd/paForNode.wsdl](src/mai
 
 L'operazione `paDemandPaymentNotice`, presente nel WSDL di pagoPA, **non è supportata**: la richiesta riceve HTTP 404.
 
-Tutte le operazioni rispondono su un unico endpoint, `POST /ws`: Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblicato in `GET /ws/paForNode.wsdl` (con autenticazione), con l'indirizzo del servizio (`soap:address`) riscritto su host e porta della richiesta: `<host>/ws`. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA. Le richieste che non sono messaggi SOAP ricevono un errore HTTP: 415 se il Content-Type non è `text/xml` o `application/soap+xml`, 400 se l'XML è malformato o non ha un `Envelope`, 405 per i metodi diversi da POST.
+Tutte le operazioni rispondono su un unico endpoint, `POST /ws` (più il canale interno `POST /internal/PagamentiTelematiciCCPservice`, vedi sotto): Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblico (nessuna autenticazione), con due convenzioni equivalenti — `GET /ws/paForNode.wsdl` (nome del bean) e `GET <path>?wsdl` sulla stessa URL del servizio, su entrambi i canali — con l'indirizzo del servizio (`soap:address`) riscritto su host e porta della richiesta. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA. Le richieste che non sono messaggi SOAP ricevono un errore HTTP: 415 se il Content-Type non è `text/xml` o `application/soap+xml`, 400 se l'XML è malformato o non ha un `Envelope`, 405 per i metodi diversi da POST.
+
+### Canale interno (`paSendRT`/`paSendRTV2` da govpay-rt-batch e govpay-console-api)
+
+Stesso servlet, stesso WSDL, stesso endpoint del canale Nodo, esposto anche su `POST /internal/PagamentiTelematiciCCPservice` (path esatto richiesto dall'issue, sostituisce l'omonimo path del core — il canale Nodo resta invece su `/ws`, path già in uso da questo microservizio e non rinominato per non rompere una configurazione già attiva lato Nodo/pagoPA): usato da [govpay-rt-batch](https://github.com/link-it/govpay-rt-batch) e [govpay-console-api](https://github.com/link-it/govpay-console-api) per inviare ricevute recuperate o caricate manualmente, con solo `paSendRT`/`paSendRTV2`. Autenticato con `AuthType.BASIC` o `LDAP` (`govpay.auth.basic.enabled=true`, abilitato di default) su un'**utenza applicativa** GovPay (tabella `utenze`, **associata a una riga in `applicazioni`** — un'utenza abilitata ma non applicativa, es. un'utenza operatore, viene comunque rifiutata), indipendente dal metodo scelto per il canale Nodo — i due convivono nella stessa security chain senza conflitto, perché autenticano tipi di credenziali diversi, ma il path su cui arriva la richiesta deve sempre corrispondere al metodo usato per autenticarla (Basic/LDAP solo su `/internal/...`, gli altri metodi solo su `/ws`): un mismatch produce `PAA_SYSTEM_ERROR`. A differenza del canale Nodo, il principal autenticato NON viene confrontato con l'intermediario dichiarato nel body (l'identità è un'applicazione, non un intermediario pagoPA) e non c'è alcun controllo ACL sul dominio: un'utenza applicativa abilitata può inviare ricevute di qualunque dominio configurato. L'header opzionale `GOVPAY-ON-BEHALF-OF` (operatore umano che ha richiesto l'invio, assente sulla scansione automatica di rt-batch) viene registrato nell'evento GDE accanto all'utenza tecnica — letto solo su questo canale, ignorato se presente su quello Nodo.
+
+**Configurazione dei client**: [govpay-rt-batch](https://github.com/link-it/govpay-rt-batch) (proprietà `govpay.url`) e [govpay-console-api](https://github.com/link-it/govpay-console-api) (proprietà `PAFORNODE_URL`) vanno puntati su `<host>/internal/PagamentiTelematiciCCPservice`, con le credenziali BASIC (o LDAP) di un'utenza applicativa abilitata.
 
 ### Autenticazione
 
-L'autenticazione usa [govpay-common-auth](https://github.com/link-it/govpay-common-auth) e si abilita **un metodo per installazione**, a seconda di come il Nodo raggiunge il servizio:
+L'autenticazione usa [govpay-common-auth](https://github.com/link-it/govpay-common-auth). Due famiglie di metodi, indipendenti fra loro:
 
-| Metodo | Proprietà da abilitare | Quando |
-|--------|------------------------|--------|
-| SSL | `govpay.auth.ssl.enabled=true` | Il TLS con certificato client è terminato dall'applicazione (comportamento del vecchio `api-pagopa` del core) |
-| SSL_HEADER | `govpay.auth.ssl-header.enabled=true` | Il TLS è terminato da un reverse proxy o API gateway, che inoltra il certificato client in un header |
-| HEADER | `govpay.auth.header.enabled=true` | Il principal è già autenticato a monte e inoltrato in un header (usato dai test) |
+| Metodo | Proprietà da abilitare | Canale | Quando |
+|--------|------------------------|--------|--------|
+| SSL | `govpay.auth.ssl.enabled=true` | Nodo | Il TLS con certificato client è terminato dall'applicazione (comportamento del vecchio `api-pagopa` del core) |
+| SSL_HEADER | `govpay.auth.ssl-header.enabled=true` | Nodo | Il TLS è terminato da un reverse proxy o API gateway, che inoltra il certificato client in un header |
+| HEADER | `govpay.auth.header.enabled=true` | Nodo | Il principal è già autenticato a monte e inoltrato in un header (usato dai test) |
+| BASIC | `govpay.auth.basic.enabled=true` (default) | Interno | Utenza applicativa GovPay (tabella `utenze`, associata a un'applicazione) — vedi [Canale interno](#canale-interno-pasendrtpasendrtv2-da-govpay-rt-batch-e-govpay-console-api) |
+| LDAP | `govpay.auth.ldap.enabled=true` | Interno | Come BASIC, directory esterna invece della password nella tabella `utenze` |
 
-Nessun metodo è abilitato di default: finché non se ne abilita uno, ogni richiesta su `/ws/**` è rifiutata. Il principal ricavato (dal subject del certificato o dall'header) deve corrispondere al campo `principal` di un intermediario abilitato nella tabella `intermediari`; ogni operazione verifica poi che l'`idBrokerPA` della richiesta sia proprio quell'intermediario. Solo `GET` su `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness` e `/actuator/prometheus` restano accessibili senza autenticazione.
+Per il canale Nodo va abilitato **un solo metodo per installazione** tra SSL, SSL_HEADER e HEADER; il canale interno (BASIC/LDAP) è indipendente e BASIC è abilitato di default. Finché nessun metodo per il canale Nodo è abilitato, ogni richiesta su `/ws`/`/internal/PagamentiTelematiciCCPservice` che non presenti credenziali valide per IL SUO canale è rifiutata — e un metodo del canale "sbagliato" sul path dell'altro è rifiutato esplicitamente (`PAA_SYSTEM_ERROR`), non solo ignorato. Sul canale Nodo, il principal ricavato (dal subject del certificato o dall'header) deve corrispondere al campo `principal` di un intermediario abilitato nella tabella `intermediari`; ogni operazione verifica poi che l'`idBrokerPA` della richiesta sia proprio quell'intermediario — controllo non applicato sul canale interno (vedi sopra). Solo `GET` su `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness`, `/actuator/prometheus` e il WSDL (entrambe le convenzioni, su entrambi i canali) restano accessibili senza autenticazione.
 
 ## Integrazione con GovPay
 
@@ -119,7 +127,7 @@ I driver JDBC non sono inclusi nel jar: vedi [Esecuzione](#esecuzione).
 
 ### Autenticazione
 
-Proprietà di [govpay-common-auth](https://github.com/link-it/govpay-common-auth) usate da questo servizio. Va abilitato un solo metodo tra SSL, SSL_HEADER e HEADER (vedi [Autenticazione](#autenticazione)).
+Proprietà di [govpay-common-auth](https://github.com/link-it/govpay-common-auth) usate da questo servizio. Per il canale Nodo va abilitato un solo metodo tra SSL, SSL_HEADER e HEADER; BASIC (canale interno) è indipendente e abilitato di default (vedi [Autenticazione](#autenticazione)).
 
 | Proprietà | Default | Descrizione |
 |-----------|---------|-------------|
@@ -135,6 +143,7 @@ Proprietà di [govpay-common-auth](https://github.com/link-it/govpay-common-auth
 | `govpay.auth.ssl-header.replace-dest` | - | Caratteri sostitutivi |
 | `govpay.auth.header.enabled` | `false` | Abilita il metodo HEADER (principal in un header) |
 | `govpay.auth.header.principal-header-names` | `X-Pre-Auth-User` | Header da cui leggere il principal, in ordine di precedenza |
+| `govpay.auth.basic.enabled` | `true` | Abilita il metodo BASIC (canale interno, utenza applicativa nella tabella `utenze`) |
 | `govpay.auth.public-chain.enabled` | `true` | Permette l'accesso senza autenticazione ai path elencati sotto |
 | `govpay.auth.public-chain.permit-all-paths[0].path` | `/actuator/health` | Path accessibile senza autenticazione |
 | `govpay.auth.public-chain.permit-all-paths[0].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
@@ -144,6 +153,12 @@ Proprietà di [govpay-common-auth](https://github.com/link-it/govpay-common-auth
 | `govpay.auth.public-chain.permit-all-paths[2].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
 | `govpay.auth.public-chain.permit-all-paths[3].path` | `/actuator/health/readiness` | Path accessibile senza autenticazione (probe di readiness) |
 | `govpay.auth.public-chain.permit-all-paths[3].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
+| `govpay.auth.public-chain.permit-all-paths[4].path` | `/ws` | Il WSDL è pubblico (`GET /ws?wsdl`); le `POST` sullo stesso path restano autenticate |
+| `govpay.auth.public-chain.permit-all-paths[4].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
+| `govpay.auth.public-chain.permit-all-paths[5].path` | `/ws/paForNode.wsdl` | WSDL pubblico, convenzione a nome del bean |
+| `govpay.auth.public-chain.permit-all-paths[5].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
+| `govpay.auth.public-chain.permit-all-paths[6].path` | `/internal/PagamentiTelematiciCCPservice` | Come `[4]`, per il canale interno |
+| `govpay.auth.public-chain.permit-all-paths[6].methods[0]` | `GET` | Metodo HTTP ammesso sul path |
 
 Header di sicurezza (`govpay.auth.headers.*`), firewall (`govpay.auth.firewall.*`) e CORS (`govpay.auth.cors.*`) sono descritti nel README di [govpay-common-auth](https://github.com/link-it/govpay-common-auth#configurazione). Gli altri metodi della libreria (BASIC, FORM, LDAP, API_KEY, OAUTH2, SPID, SESSION) non sono previsti per questo servizio.
 

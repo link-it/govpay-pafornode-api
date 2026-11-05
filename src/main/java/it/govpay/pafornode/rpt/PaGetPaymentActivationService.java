@@ -96,6 +96,7 @@ public class PaGetPaymentActivationService {
 
 	@Transactional
 	public PaGetPaymentRes eseguiGetPayment(PaGetPaymentReq request, String numeroAvviso, String codDominio) {
+		PaForNodeChecks.verificaCanaleNodo(codDominio);
 		IntermediarioEntity intermediario = intermediarioRepository.findByCodIntermediario(request.getIdBrokerPA())
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_INTERMEDIARIO_ERRATO, codDominio));
 		PaForNodeChecks.verificaPrincipalAutenticato(intermediario, codDominio);

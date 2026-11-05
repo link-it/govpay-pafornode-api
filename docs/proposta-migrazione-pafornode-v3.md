@@ -1444,6 +1444,202 @@ Stessa sessione di §3unvicies/§3duovicies, quarta segnalazione. 200/200 test v
    10€ e unico trasferimento a 0€ → `anomalo=true`, nota di dettaglio presente, nessun
    `Pagamento` creato.
 
+## 3quattuorvicies. Issue #10: canale interno per govpay-rt-batch/govpay-console-api (2026-11-04)
+
+Espone su `govpay-pafornode-api` il canale interno `/internal/PagamentiTelematiciCCPservice`
+del core (qui `/internal/ws`), su cui `govpay-rt-batch` e `govpay-console-api` inviano
+ricevute recuperate o caricate manualmente — stesso contratto e stessa logica di acquisizione
+del canale Nodo (issue #6), autenticazione diversa. Nessuna modifica a
+`govpay-common-pendenze`: tutta la logica riusata è già in questo repo. 209/209 test verdi.
+
+1. **Autenticazione**: `PaForNodePrincipalLoader#load` (unico bean `GovpayPrincipalLoader`
+   dell'applicazione — la libreria ne accetta uno solo) ora distingue per `AuthType`: `BASIC`
+   cerca su `UtenzaEntity` (estesa con `abilitato`/`ruoli`/`password`, colonne già presenti
+   nello schema condiviso `utenze` ma non ancora mappate — usate finora solo da
+   `ApplicazioneDominioResolver`), qualunque altro valore (`SSL`/`SSL_HEADER`/`HEADER`) resta
+   sul ramo esistente su `IntermediarioEntity`. `govpay.auth.basic.enabled=true` di default:
+   convive senza conflitto con il metodo scelto per il Nodo, perché ciascun metodo scatta solo
+   se la richiesta presenta IL SUO tipo di credenziale.
+2. **Secondo path**: `WsConfig#messageDispatcherServlet` registra lo stesso
+   `ServletRegistrationBean` su un secondo URL pattern (`/internal/ws/*`, oltre a `/ws/*`) —
+   Spring-WS dispatcha per payload-root (SOAP action), non per path, quindi nessuna
+   duplicazione di marshaller/interceptor/WSDL. Nessuna proprietà "canale" dedicata: l'URL
+   completo è già loggato nell'evento GDE.
+3. **Controllo principal/intermediario bypassato sul canale interno** (decisione esplicita
+   dell'issue, non ovvia dalle 4 fasi descritte lì): l'utenza applicativa autenticata non ha
+   nulla a che fare con l'intermediario dichiarato in `idBrokerPA` — confrontarli sarebbe un
+   controllo privo di senso, non solo superfluo. Nuovo
+   `PaSendRTService#verificaPrincipalAutenticatoSeCanaleNodo`, che salta
+   `PaForNodeChecks.verificaPrincipalAutenticato` quando l'`AuthType` che ha autenticato LA
+   RICHIESTA CORRENTE (`AuthTypeAccessor.current`, già presente in govpay-common-auth, non
+   ancora usato in questo repo) è `BASIC` — determinato dall'AuthType, non dal path: resta
+   corretto anche se in futuro convivessero più path per lo stesso metodo. Gli altri controlli
+   sul contenuto della richiesta (intermediario/dominio/stazione) restano identici sui due
+   canali, come richiesto dall'issue.
+4. **Operatore nel GDE**: nessuna modifica a govpay-gde-api/govpay-common necessaria —
+   `NuovoEvento.parametriRichiesta.utente` esiste già nel contratto, distinto da `principal`,
+   e `PaForNodeGdeService#convertToGdeEvent` lo scrive già (`dettaglioRichiesta.setUtente(...)`)
+   da quando questo file è stato scritto: il gap era solo che nessuno popolava
+   `GdeEventInfo.getUtente()`. Nuovo: `GdeEventFilter` legge l'header `GOVPAY-ON-BEHALF-OF`
+   (costante `ON_BEHALF_OF_HEADER`) e lo passa a `eventInfo.utente(...)` — letto comunque,
+   indipendentemente dal path: assente sulla scansione automatica di rt-batch e sul canale
+   Nodo, dove non ha significato.
+5. **`SoapTransportUtils` resa pubblica** (era package-private in `it.govpay.pafornode.gde`):
+   serve anche a `PaSendRTService` (package `it.govpay.pafornode.endpoint`) per recuperare
+   l'`HttpServletRequest` corrente da passare ad `AuthTypeAccessor.current`.
+
+### Revisione del codice: 4 difetti corretti, 1 segnalato come punto aperto (2026-11-04)
+
+217/217 test verdi dopo i fix.
+
+1. **Utenza non applicativa accettata sul canale interno**: `PaForNodePrincipalLoader`
+   verificava solo esistenza+abilitazione dell'utenza, non l'associazione a
+   un'`ApplicazioneEntity` (`applicazioni.id_utenza`, `NOT NULL UNIQUE` — ogni applicazione
+   ha esattamente un'utenza, ma un'utenza puo' non essere di nessuna applicazione, es.
+   un'utenza "operatore" dello stesso schema condiviso `utenze`). **Fix**: nuovo
+   `PaSendRTService#verificaUtenzaApplicativa`, verifica `applicazioneRepository
+   .findByIdUtenza(utenza.getId()).isPresent()` — a livello di autorizzazione (come il
+   confronto principal/intermediario), non di autenticazione.
+2. **Basic autorizzava anche il canale Nodo, e viceversa**: il bypass del confronto
+   principal/intermediario si decideva dal solo `AuthType`, non dal path — una credenziale
+   Basic valida funzionava anche su `/ws`, e un'autenticazione da intermediario funzionava
+   anche su `/internal/ws`. **Fix**: nuovo `PaSendRTService#verificaCanale`, confronta
+   `SoapTransportUtils.isPathCanaleInterno(request)` con
+   `PaForNodePrincipalLoader.autenticaUtenzaApplicativa(authType)` — se non coincidono,
+   `PAA_SYSTEM_ERROR` immediato, nessuno dei due controlli (principal/intermediario O
+   utenza/applicazione) viene nemmeno tentato.
+3. **LDAP non operativo per l'utenza applicativa**: il dispatch su `AuthType` riconosceva
+   solo `BASIC` come "utenza applicativa" — `LDAP` cadeva nel ramo intermediario (loader) e
+   nel confronto principal/idBrokerPA (servizio), nonostante il README lo citi come metodo
+   alternativo per il canale interno. **Fix**: `PaForNodePrincipalLoader
+   .autenticaUtenzaApplicativa(AuthType)`, pubblico, vero per `BASIC` e `LDAP` — unica
+   definizione, usata sia dal loader sia da `verificaCanale`.
+4. **Operatore registrato anche sul canale Nodo**: `GdeEventFilter` copiava sempre
+   `GOVPAY-ON-BEHALF-OF` in `GdeEventInfo.utente`, indipendentemente dal path — una chiamata
+   Nodo poteva attribuirsi un operatore arbitrario nel GDE. **Fix**: letto solo quando
+   `SoapTransportUtils.isPathCanaleInterno(request)`.
+5. **Path e pubblicazione del WSDL non conformi al testo dell'issue — risolto in parte,
+   deciso con l'utente (2026-11-05)**: l'issue richiede `/PagamentiTelematiciCCPservice`/
+   `/internal/PagamentiTelematiciCCPservice` (non `/ws`/`/internal/ws`) e un WSDL pubblico
+   via `?wsdl` sulla stessa URL del servizio, non una risorsa statica autenticata.
+   **Decisione**: il canale interno (nuovo, nessun rischio di compatibilita') si rinomina
+   nel path esatto richiesto dall'issue; il canale Nodo resta deliberatamente su `/ws` (path
+   GIA' in uso da questo microservizio, non introdotto da questa issue — rinominarlo e' un
+   cambio di contratto per un canale potenzialmente gia' configurato lato Nodo/pagoPA, da
+   decidere con chi gestisce quella configurazione, non da assumere qui).
+   - `WsConfig#messageDispatcherServlet`: secondo URL pattern cambiato da `/internal/ws/*` a
+     `/internal/PagamentiTelematiciCCPservice` (esatto, senza wildcard — nessun sotto-risorsa
+     necessaria sotto questo path, a differenza di `/ws/paForNode.wsdl`).
+   - **WSDL pubblico via `?wsdl`**: verificato sui sorgenti di Spring-WS
+     (`MessageDispatcherServlet#getWsdlDefinition`) che la libreria supporta SOLO la
+     convenzione a nome del bean (`<path>/<nomeBean>.wsdl`, confronto sul suffisso `.wsdl`
+     del path) — nessun supporto nativo a `?wsdl` sulla stessa URL. **Fix**: override di
+     `getWsdlDefinition` in `PaForNodeMessageDispatcherServlet` — prova prima la convenzione
+     esistente (`super.getWsdlDefinition`), poi, se il metodo e' GET e il parametro `wsdl` e'
+     presente, restituisce l'unico bean `Wsdl11Definition` dell'app (`getWebApplicationContext
+     ().getBean(Wsdl11Definition.class)`) — un solo contratto, pubblicato su entrambi i canali
+     con entrambe le convenzioni. Pubblico (non autenticato) tramite
+     `govpay.auth.public-chain.permit-all-paths` (nuove entry per `/ws`,
+     `/ws/paForNode.wsdl` e `/internal/PagamentiTelematiciCCPservice`, SOLO metodo GET — le
+     `POST` sugli stessi path restano autenticate, il matcher della libreria e' per metodo
+     oltre che per path, stesso meccanismo gia' in uso per gli endpoint actuator).
+   - Nuovi test (3, in `PaForNodeInternalChannelTest`): WSDL pubblico senza credenziali su
+     entrambi i canali con `?wsdl`, e che la `POST` sullo stesso path resti autenticata
+     nonostante il WSDL pubblico. 220/220 test verdi in tutto il modulo.
+
+### Secondo giro di revisione: 3 ulteriori difetti corretti (2026-11-05)
+
+222/222 test verdi dopo i fix. Tutti e tre riguardano conseguenze non ovvie delle scelte
+del giro precedente, emerse solo rileggendo il comportamento di Spring/Spring-WS a basso
+livello, non dal solo testo dell'issue.
+
+1. **Riconoscimento del canale interno aggirabile tramite il path**:
+   `SoapTransportUtils.isPathCanaleInterno` confrontava `request.getRequestURI()` con un
+   prefisso (`.contains("/internal/")") — ma il mapping del canale Nodo e' a wildcard
+   (`/ws/*`, accetta QUALUNQUE sotto-path), quindi una richiesta a `/ws/internal/qualcosa`
+   veniva classificata come canale interno pur essendo arrivata (ed essendo autenticabile)
+   dal lato Nodo, permettendo a una credenziale Basic di autenticarsi li' e saltare il
+   confronto principal/intermediario. **Fix**: confronto esatto su
+   `HttpServletRequest#getServletPath()` (il path EFFETTIVO del servizio, al netto di
+   context path e query string — per il mapping a wildcard del Nodo vale sempre `/ws`,
+   mai il path interno, indipendentemente da cosa segue nell'URL) contro una nuova costante
+   pubblica `SoapTransportUtils.PATH_CANALE_INTERNO`, usata anche da `WsConfig` per
+   registrare il servlet (un solo punto non puo' disallinearsi dall'altro).
+2. **La separazione dei canali valeva solo per l'invio RT**: `verificaCanale` e'
+   specifico di `PaSendRTService` — le altre tre operazioni SOAP (`paVerifyPaymentNotice`,
+   `paGetPayment`, `paGetPaymentV2`) verificavano solo il confronto principal/intermediario,
+   senza sapere su quale path erano arrivate; dato che Spring-WS dispatcha per payload-root
+   e non per path, un intermediario autenticato per davvero poteva eseguire `paGetPayment`
+   anche sul canale interno, bypassando la restrizione (solo `paSendRT`/`paSendRTV2` previsti
+   li') che l'issue prevede implicitamente. **Fix**: nuovo `PaForNodeChecks
+   .verificaCanaleNodo(codDominio)` — rifiuta SEMPRE (`PAA_SYSTEM_ERROR`) una chiamata
+   arrivata sul path interno, qualunque sia l'autenticazione — chiamato da
+   `PaVerifyPaymentNoticeService`/`PaGetPaymentActivationService`/
+   `PaGetPaymentV2ActivationService` prima del confronto principal/intermediario esistente.
+   `GetPaymentOptionsService` (REST, issue #4) non e' toccato: vive su un `DispatcherServlet`
+   Spring MVC completamente diverso, non raggiungibile da `/internal/...` per costruzione.
+3. **Il WSDL scaricato dal canale interno indicava ancora il Nodo come destinazione**: il
+   file statico `paForNode.wsdl` ha un `soap:address` fisso su `/ws` — il comportamento di
+   default di Spring-WS (`LocationTransformerObjectSupport#transformLocation`) riscrive solo
+   schema/host/porta/context-path, mai il path del location originale. Un client che
+   generasse la propria richiesta dall'indirizzo letto nel WSDL scaricato dal canale interno
+   avrebbe quindi inviato le RT a `/ws`, dove — dopo il fix del punto 2 di questo giro — le
+   sue credenziali Basic/LDAP vengono correttamente rifiutate per mismatch di canale. **Fix**:
+   nuovo `PaForNodeWsdlDefinitionHandlerAdapter` (estende `WsdlDefinitionHandlerAdapter`,
+   registrato con il nome di bean che `MessageDispatcherServlet` si aspetta,
+   `wsdlDefinitionHandlerAdapter` — lo recupera per nome durante l'inizializzazione) —
+   applica prima la trasformazione standard, poi, solo se il risultato termina esattamente
+   con `/ws` e la richiesta del WSDL e' arrivata sul canale interno, sostituisce quel
+   suffisso con `SoapTransportUtils.PATH_CANALE_INTERNO`. Un solo file WSDL statico, nessuna
+   duplicazione — l'indirizzo pubblicato si auto-corregge in base al canale da cui e' stato
+   richiesto.
+
+Nuovi test (3 aggiuntivi in `PaForNodeInternalChannelTest`, totale 16 nel file): bypass del
+riconoscimento canale su un path che contiene il prefisso interno ma matcha il wildcard del
+Nodo, `paGetPayment` rifiutato sul canale interno anche con autenticazione da intermediario
+valida, `soap:address` del WSDL verificato esplicitamente (non solo la sua presenza) su
+entrambi i canali.
+
+### Terzo giro di revisione: 2 ulteriori difetti corretti (2026-11-05)
+
+225/225 test verdi dopo i fix. Entrambi sono conseguenze residue dei due giri precedenti,
+non del testo originale dell'issue.
+
+1. **Le operazioni Nodo non verificavano il metodo di autenticazione**: `PaForNodeChecks
+   .verificaCanaleNodo` (punto 2 del giro precedente) rifiutava solo in base al PATH (canale
+   interno), non anche in base al metodo di autenticazione usato sul path Nodo — un'utenza
+   applicativa (autenticata con `AuthType.BASIC`/`LDAP`) il cui `principal` coincidesse
+   (anche per puro caso, o deliberatamente) con quello di un intermediario registrato
+   superava comunque il successivo confronto `verificaPrincipalAutenticato`, eseguendo
+   `paGetPayment`/`paGetPaymentV2`/`paVerifyPaymentNotice` sul canale Nodo con credenziali
+   pensate per quello interno — lo stesso principio del punto 1 del giro precedente
+   (`PaSendRTService#verificaCanale`, gia' bidirezionale: controlla path E metodo in
+   ENTRAMBE le direzioni), qui applicato solo a meta'. **Fix**: `verificaCanaleNodo` ora
+   rifiuta anche quando `PaForNodePrincipalLoader.autenticaUtenzaApplicativa(authType)` e'
+   vero, indipendentemente dal path — queste tre operazioni devono SEMPRE essere autenticate
+   con un metodo da intermediario. Nuovo test che costruisce DELIBERATAMENTE un'utenza con
+   principal identico a quello di un intermediario registrato, per provare che il rifiuto
+   avviene sul metodo di autenticazione (prima del confronto principal/intermediario), non
+   per una differenza di principal che nasconderebbe il problema.
+2. **Il WSDL perdeva il context path quando configurato**: `paForNode.wsdl` ha un
+   `soap:address` ASSOLUTO (`http://.../ws`) — verificato sui sorgenti di Spring-WS
+   (`LocationTransformerObjectSupport#transformLocation`) che il context path viene
+   anteposto SOLO per un location RELATIVO (`location.startsWith("/")`); per un location
+   assoluto come il nostro, il comportamento di default riscrive solo schema/host/porta, non
+   il context path — su NESSUNO dei due canali, non solo quello interno. **Prima versione
+   del fix (round precedente), corretta solo a meta'**: `PaForNodeWsdlDefinitionHandlerAdapter`
+   inseriva il context path SOLO quando sostituiva il suffisso verso il path del canale
+   interno — il canale Nodo (nessuna sostituzione di path, il suffisso resta `/ws` cosi'
+   com'e') continuava a non riceverlo, quindi con `server.servlet.context-path=/pafornode`
+   pubblicava ancora `/ws` invece di `/pafornode/ws` — invisibile nei test (sempre deployati
+   alla radice) finche' un secondo giro di revisione non lo ha segnalato esplicitamente.
+   **Fix definitivo**: il context path si inserisce SEMPRE (non solo quando si corregge
+   verso il canale interno), per entrambi i canali — un solo ramo di codice ricostruisce
+   `schema://host:porta` + `contextPath` + (path del canale interno O `/ws`, secondo quale
+   canale ha servito la richiesta). Test `PaForNodeWsdlContextPathTest` estesi: entrambi i
+   canali verificano esplicitamente il context path nel `soap:address`, non solo quello
+   interno.
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,

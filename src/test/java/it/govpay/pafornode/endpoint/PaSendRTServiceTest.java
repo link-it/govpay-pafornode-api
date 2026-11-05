@@ -29,12 +29,14 @@ import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.entity.StazioneEntity;
+import it.govpay.common.repository.ApplicazioneRepository;
 import it.govpay.common.repository.DominioRepository;
 import it.govpay.common.repository.IntermediarioRepository;
 import it.govpay.common.repository.StazioneRepository;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.rpt.RptAttivazioneService;
+import it.govpay.pafornode.security.UtenzaRepository;
 import it.govpay.pafornode.verifica.ApplicazioneDominioResolver;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
@@ -66,10 +68,13 @@ class PaSendRTServiceTest {
 	private final RptAttivazioneService rptAttivazioneService = mock(RptAttivazioneService.class);
 	private final AcquisizioneRicevutaService acquisizioneRicevutaService = mock(AcquisizioneRicevutaService.class);
 	private final ApplicazioneDominioResolver applicazioneDominioResolver = mock(ApplicazioneDominioResolver.class);
+	private final UtenzaRepository utenzaRepository = mock(UtenzaRepository.class);
+	private final ApplicazioneRepository applicazioneRepository = mock(ApplicazioneRepository.class);
 
 	private final PaSendRTService service = new PaSendRTService(intermediarioRepository, stazioneRepository,
 			dominioRepository, pendenzaRepository, rptRepository, rptAttivazioneService,
-			acquisizioneRicevutaService, applicazioneDominioResolver, Clock.systemDefaultZone());
+			acquisizioneRicevutaService, applicazioneDominioResolver, utenzaRepository, applicazioneRepository,
+			Clock.systemDefaultZone());
 
 	@AfterEach
 	void pulisciContestoSicurezza() {

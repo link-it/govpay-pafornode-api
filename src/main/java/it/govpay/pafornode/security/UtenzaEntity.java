@@ -19,9 +19,11 @@ import jakarta.persistence.Table;
  * questo (deviazione consapevole rispetto ad {@code ApplicazioneEntity}/{@code DominioEntity},
  * che vivono li').
  *
- * <p>Qui serve solo per {@link ApplicazioneDominioResolver} (ricerca dell'applicazione che
- * gestisce un dominio/iuv, §3quinquies del design doc) — non per l'autenticazione del
- * chiamante del contratto paForNode, che usa {@link PaForNodePrincipalLoader}.
+ * <p>Usata da {@link ApplicazioneDominioResolver} (ricerca dell'applicazione che gestisce un
+ * dominio/iuv, §3quinquies del design doc) e, da issue #10, da
+ * {@link PaForNodePrincipalLoader} per l'autenticazione BASIC del canale interno
+ * (govpay-rt-batch/govpay-console-api) — il canale Nodo (pagoPA) resta autenticato via
+ * {@code IntermediarioEntity}, non tocca questa entity.</p>
  */
 @Entity
 @Table(name = "utenze")
@@ -44,6 +46,15 @@ public class UtenzaEntity {
 
 	@Column(name = "principal_originale", nullable = false, length = 4000)
 	private String principalOriginale = "";
+
+	@Column(name = "abilitato", nullable = false)
+	private Boolean abilitato = true;
+
+	@Column(name = "ruoli", length = 512)
+	private String ruoli;
+
+	@Column(name = "password", length = 255)
+	private String password;
 
 	public Long getId() {
 		return id;
@@ -75,5 +86,29 @@ public class UtenzaEntity {
 
 	public void setAutorizzazioneDominiStar(Boolean autorizzazioneDominiStar) {
 		this.autorizzazioneDominiStar = autorizzazioneDominiStar;
+	}
+
+	public Boolean getAbilitato() {
+		return abilitato;
+	}
+
+	public void setAbilitato(Boolean abilitato) {
+		this.abilitato = abilitato;
+	}
+
+	public String getRuoli() {
+		return ruoli;
+	}
+
+	public void setRuoli(String ruoli) {
+		this.ruoli = ruoli;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
 	}
 }

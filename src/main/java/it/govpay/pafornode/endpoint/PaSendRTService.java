@@ -12,13 +12,22 @@ import java.util.Optional;
 
 import javax.xml.datatype.XMLGregorianCalendar;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Marshaller;
 
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import it.govpay.common.auth.AuthTypeAccessor;
+import it.govpay.common.auth.spi.AuthType;
+import it.govpay.common.repository.ApplicazioneRepository;
+import it.govpay.pafornode.gde.SoapTransportUtils;
+import it.govpay.pafornode.security.PaForNodePrincipalLoader;
+import it.govpay.pafornode.security.UtenzaRepository;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtReceipt;
@@ -116,6 +125,8 @@ public class PaSendRTService {
 	private final RptAttivazioneService rptAttivazioneService;
 	private final AcquisizioneRicevutaService acquisizioneRicevutaService;
 	private final ApplicazioneDominioResolver applicazioneDominioResolver;
+	private final UtenzaRepository utenzaRepository;
+	private final ApplicazioneRepository applicazioneRepository;
 	private final Clock clock;
 	private final ObjectFactory objectFactory = new ObjectFactory();
 	private final JAXBContext jaxbContext;
@@ -124,7 +135,8 @@ public class PaSendRTService {
 	public PaSendRTService(IntermediarioRepository intermediarioRepository, StazioneRepository stazioneRepository,
 			DominioRepository dominioRepository, PendenzaRepository pendenzaRepository, RptRepository rptRepository,
 			RptAttivazioneService rptAttivazioneService, AcquisizioneRicevutaService acquisizioneRicevutaService,
-			ApplicazioneDominioResolver applicazioneDominioResolver, Clock clock) {
+			ApplicazioneDominioResolver applicazioneDominioResolver, UtenzaRepository utenzaRepository,
+			ApplicazioneRepository applicazioneRepository, Clock clock) {
 		this.intermediarioRepository = intermediarioRepository;
 		this.stazioneRepository = stazioneRepository;
 		this.dominioRepository = dominioRepository;
@@ -133,6 +145,8 @@ public class PaSendRTService {
 		this.rptAttivazioneService = rptAttivazioneService;
 		this.acquisizioneRicevutaService = acquisizioneRicevutaService;
 		this.applicazioneDominioResolver = applicazioneDominioResolver;
+		this.utenzaRepository = utenzaRepository;
+		this.applicazioneRepository = applicazioneRepository;
 		this.clock = clock;
 		try {
 			this.jaxbContext = JAXBContext.newInstance(PaSendRTReq.class);
@@ -258,17 +272,69 @@ public class PaSendRTService {
 		return response;
 	}
 
-	/** Stesso schema di {@code PaVerifyPaymentNoticeService#eseguiVerifica}: niente controllo dominio/stazione aggiuntivo. */
+	/**
+	 * Stesso schema di {@code PaVerifyPaymentNoticeService#eseguiVerifica}: niente controllo
+	 * dominio/stazione aggiuntivo. Controlli sul contenuto della richiesta (intermediario,
+	 * stazione, dominio) identici sui due canali (decisione esplicita dell'issue #10) — cambia
+	 * solo l'identita' autenticata ammessa a chiamare, verificata da {@link #verificaCanale}.
+	 */
 	private DominioEntity verificaAutorizzazione(String idBrokerPA, String idStation, String codDominio) {
 		IntermediarioEntity intermediario = intermediarioRepository.findByCodIntermediario(idBrokerPA)
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_INTERMEDIARIO_ERRATO, codDominio));
-		PaForNodeChecks.verificaPrincipalAutenticato(intermediario, codDominio);
+		verificaCanale(intermediario, codDominio);
 
 		stazioneRepository.findByIntermediarioCodIntermediarioAndCodStazione(intermediario.getCodIntermediario(),
 				idStation).orElseThrow(() -> new NdpException(FaultPa.PAA_STAZIONE_INT_ERRATA, codDominio));
 
 		return dominioRepository.findByCodDominio(codDominio)
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_DOMINIO_ERRATO, codDominio));
+	}
+
+	/**
+	 * Issue #10, bug di revisione corretto 2026-11-04: autorizza il canale su cui la richiesta
+	 * e' effettivamente arrivata (il PATH, {@code /internal/**} vs Nodo), non solo sul metodo
+	 * di autenticazione usato — un controllo sul solo {@code AuthType} permetterebbe a una
+	 * credenziale Basic di autenticarsi anche sul path Nodo (saltando il confronto principal/
+	 * intermediario li' dove invece deve valere) e, viceversa, a un certificato/header
+	 * dell'intermediario di autenticarsi sul path interno. Qui si richiede che i due
+	 * coincidano sempre: path interno SOLO con {@code AuthType} da utenza applicativa (
+	 * {@link PaForNodePrincipalLoader#autenticaUtenzaApplicativa}, Basic o LDAP), path Nodo
+	 * SOLO con gli altri. Sul canale interno, inoltre, non basta che l'utenza esista e sia
+	 * abilitata (verificato dalla catena di sicurezza all'autenticazione): deve anche essere
+	 * un'utenza APPLICATIVA, associata a una riga in {@code applicazioni} — altrimenti
+	 * un'utenza operatore qualsiasi (stesso schema condiviso {@code utenze}, non pensata per
+	 * questo contratto) arriverebbe comunque all'acquisizione RT. Sul canale Nodo resta
+	 * invece il confronto esistente principal/{@code idBrokerPA} ("Sul canale interno non si
+	 * applica il controllo del core principal = principal dell'intermediario", decisione
+	 * esplicita dell'issue — qui si legge "e viceversa").
+	 */
+	private void verificaCanale(IntermediarioEntity intermediario, String codDominio) {
+		HttpServletRequest request = SoapTransportUtils.currentHttpServletRequest();
+		AuthType authType = request != null ? AuthTypeAccessor.current(request) : null;
+		boolean autenticatoConUtenzaApplicativa = PaForNodePrincipalLoader.autenticaUtenzaApplicativa(authType);
+		boolean pathCanaleInterno = SoapTransportUtils.isPathCanaleInterno(request);
+
+		if (pathCanaleInterno != autenticatoConUtenzaApplicativa) {
+			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
+					"Autorizzazione fallita: canale e metodo di autenticazione non corrispondono.", codDominio);
+		}
+		if (pathCanaleInterno) {
+			verificaUtenzaApplicativa(codDominio);
+		} else {
+			PaForNodeChecks.verificaPrincipalAutenticato(intermediario, codDominio);
+		}
+	}
+
+	private void verificaUtenzaApplicativa(String codDominio) {
+		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+		String principal = authentication != null ? authentication.getName() : null;
+		boolean autorizzata = principal != null && utenzaRepository.findByPrincipal(principal)
+				.map(utenza -> applicazioneRepository.findByIdUtenza(utenza.getId()).isPresent())
+				.orElse(false);
+		if (!autorizzata) {
+			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
+					"Autorizzazione fallita: utenza non associata a un'applicazione GovPay.", codDominio);
+		}
 	}
 
 	/**

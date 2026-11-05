@@ -13,6 +13,7 @@ import org.springframework.ws.server.endpoint.adapter.method.MethodArgumentResol
 import org.springframework.ws.server.endpoint.adapter.method.MethodReturnValueHandler;
 import org.springframework.ws.server.endpoint.adapter.method.MarshallingPayloadMethodProcessor;
 import org.springframework.ws.transport.http.MessageDispatcherServlet;
+import org.springframework.ws.transport.http.WsdlDefinitionHandlerAdapter;
 import org.springframework.ws.wsdl.wsdl11.SimpleWsdl11Definition;
 import org.springframework.ws.wsdl.wsdl11.Wsdl11Definition;
 
@@ -25,6 +26,7 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 import it.govpay.pafornode.gde.OperationIdEndpointInterceptor;
+import it.govpay.pafornode.gde.SoapTransportUtils;
 
 /**
  * Espone {@code paForNode.wsdl} (gia' presente in risorse, pubblicato da pagoPA) cosi' com'e':
@@ -35,7 +37,25 @@ import it.govpay.pafornode.gde.OperationIdEndpointInterceptor;
  * riscritti con quelli della richiesta ({@code transformWsdlLocations}).
  *
  * <p>Il bean {@code paForNode} e' esposto su {@code /ws/paForNode.wsdl} (nome del bean =
- * nome del file, per convenzione di {@link MessageDispatcherServlet}).</p>
+ * nome del file, per convenzione di {@link MessageDispatcherServlet}) — e, da revisione
+ * dell'issue #10 (finding #4, 2026-11-05), anche su {@code GET <path>?wsdl} su entrambi i
+ * canali (vedi {@code PaForNodeMessageDispatcherServlet#getWsdlDefinition}), la convenzione
+ * che pagoPA/l'issue richiedono davvero — pubblico, non autenticato (vedi {@code
+ * application.properties}, {@code govpay.auth.public-chain}).</p>
+ *
+ * <p>Issue #10: lo stesso servlet risponde anche su {@code /internal/PagamentiTelematiciCCPservice}
+ * (canale interno, govpay-rt-batch/govpay-console-api — path esatto richiesto dall'issue, non
+ * un'estensione di {@code /ws}) — un secondo URL pattern sullo STESSO bean, non una seconda
+ * configurazione: Spring-WS dispatcha per payload-root (SOAP action), non per path, quindi gli
+ * stessi {@code @Endpoint} rispondono su entrambi senza duplicare marshaller/interceptor/WSDL.
+ * Il canale Nodo resta deliberatamente su {@code /ws} (non rinominato in {@code
+ * /PagamentiTelematiciCCPservice} come il testo dell'issue vorrebbe: e' un path GIA' in uso da
+ * questo microservizio, non introdotto da questa issue — rinominarlo e' un cambio di contratto
+ * da decidere con chi gestisce la configurazione lato Nodo/pagoPA, non da assumere qui; punto
+ * aperto). L'autenticazione (BASIC/LDAP vs SSL/SSL_HEADER/HEADER) resta l'unica differenza fra
+ * i due canali per le POST, verificata anche a livello di business da {@code
+ * PaSendRTService#verificaCanale} (il path deve corrispondere al metodo usato) — vedi {@code
+ * PaForNodePrincipalLoader}.</p>
  */
 @EnableWs
 @Configuration
@@ -54,7 +74,7 @@ public class WsConfig implements WsConfigurer {
 		MessageDispatcherServlet servlet = new PaForNodeMessageDispatcherServlet();
 		servlet.setApplicationContext(applicationContext);
 		servlet.setTransformWsdlLocations(true);
-		return new ServletRegistrationBean<>(servlet, "/ws/*");
+		return new ServletRegistrationBean<>(servlet, "/ws/*", SoapTransportUtils.PATH_CANALE_INTERNO);
 	}
 
 	@Bean(name = "paForNode")
@@ -62,6 +82,19 @@ public class WsConfig implements WsConfigurer {
 		SimpleWsdl11Definition wsdl11Definition = new SimpleWsdl11Definition();
 		wsdl11Definition.setWsdl(new ClassPathResource("xsd/paForNode.wsdl"));
 		return wsdl11Definition;
+	}
+
+	/**
+	 * Nome di bean richiesto da {@code MessageDispatcherServlet} ({@code
+	 * DEFAULT_WSDL_DEFINITION_HANDLER_ADAPTER_BEAN_NAME}, verificato sui sorgenti della
+	 * libreria): lo recupera per nome durante l'inizializzazione (altrimenti ne crea uno di
+	 * default) e gli applica da solo {@code transformLocations}/{@code
+	 * transformSchemaLocations} — non serve impostarli qui. Vedi Javadoc di {@link
+	 * PaForNodeWsdlDefinitionHandlerAdapter} (issue #10, finding #3 di revisione).
+	 */
+	@Bean(name = "wsdlDefinitionHandlerAdapter")
+	public WsdlDefinitionHandlerAdapter wsdlDefinitionHandlerAdapter() {
+		return new PaForNodeWsdlDefinitionHandlerAdapter();
 	}
 
 	/**

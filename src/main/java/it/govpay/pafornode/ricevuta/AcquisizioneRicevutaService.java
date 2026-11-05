@@ -8,6 +8,8 @@ import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.TipoVersamentoDominioEntity;
@@ -31,6 +33,14 @@ import it.govpay.pendenze.repository.PagamentoRepository;
 import it.govpay.pendenze.repository.RendicontazioneRepository;
 import it.govpay.pendenze.service.PosizioneDebitoriaService;
 import it.govpay.pafornode.rpt.NotificaAttivazioneService;
+import it.govpay.pafornode.gde.PaForNodeGdeService;
+import it.govpay.common.gde.GdeCostanti;
+import it.govpay.common.gde.GdeEventInfo;
+import it.govpay.common.logging.TransactionContext;
+import it.govpay.gde.client.beans.CategoriaEvento;
+import it.govpay.gde.client.beans.ComponenteEvento;
+import it.govpay.gde.client.beans.EsitoEvento;
+import it.govpay.gde.client.beans.RuoloEvento;
 
 /**
  * Acquisizione di una ricevuta di pagamento (RT) pagoPA su una RPT gia' attivata —
@@ -101,6 +111,7 @@ public class AcquisizioneRicevutaService {
     private final RendicontazioneRepository rendicontazioneRepository;
     private final PosizioneDebitoriaService posizioneDebitoriaService;
     private final NotificaAttivazioneService notificaAttivazioneService;
+    private final PaForNodeGdeService paForNodeGdeService;
     private final Clock clock;
 
     public AcquisizioneRicevutaService(PagamentoRepository pagamentoRepository,
@@ -108,7 +119,7 @@ public class AcquisizioneRicevutaService {
             TipoVersamentoDominioRepository tipoVersamentoDominioRepository,
             ApplicazioneRepository applicazioneRepository, RendicontazioneRepository rendicontazioneRepository,
             PosizioneDebitoriaService posizioneDebitoriaService, NotificaAttivazioneService notificaAttivazioneService,
-            Clock clock) {
+            PaForNodeGdeService paForNodeGdeService, Clock clock) {
         this.pagamentoRepository = pagamentoRepository;
         this.promemoriaRepository = promemoriaRepository;
         this.notificaAppIoRepository = notificaAppIoRepository;
@@ -117,6 +128,7 @@ public class AcquisizioneRicevutaService {
         this.rendicontazioneRepository = rendicontazioneRepository;
         this.posizioneDebitoriaService = posizioneDebitoriaService;
         this.notificaAttivazioneService = notificaAttivazioneService;
+        this.paForNodeGdeService = paForNodeGdeService;
         this.clock = clock;
     }
 
@@ -299,9 +311,45 @@ public class AcquisizioneRicevutaService {
         // design doc: questa pendenza non comparira' nelle opzioni restituite da chi filtra
         // per stato dell'opzione, es. GetPaymentOptionsService).
         if (opzioneAnnullataDaCanaleConcorrente) {
+            String descrizioneAnomalia = String.join("; ", note);
             posizioneDebitoriaService.registraEsitoPendenzaSuOpzioneAnnullataDaCanaleConcorrente(
                     risolviCodApplicazione(pendenza.getIdApplicazione()), pendenza.getIdPendenza(),
-                    StatoPendenza.ESEGUITO, String.join("; ", note));
+                    StatoPendenza.ESEGUITO, descrizioneAnomalia);
+
+            // Issue #14: l'anomalia si riflette anche sull'intera PosizioneDebitoria (non solo
+            // su questa pendenza), e viene registrata sul Giornale degli Eventi come evento
+            // dedicato — primo evento emesso da logica applicativa interna, non da GdeEventFilter.
+            String codDocumento = pendenza.getOpzionePagamento().getPosizioneDebitoria().getCodDocumento();
+            posizioneDebitoriaService.segnalaAnomalia(pendenza.getIdApplicazione(), pendenza.getIdDominio(),
+                    codDocumento, descrizioneAnomalia);
+
+            GdeEventInfo eventoAnomalia = GdeEventInfo.builder()
+                    .componente(ComponenteEvento.API_PAGOPA)
+                    .categoriaEvento(CategoriaEvento.INTERNO)
+                    .ruolo(RuoloEvento.SERVER)
+                    .tipoEvento(GdeCostanti.APIPAGOPA_TIPOEVENTO_SEGNALAZIONEANOMALIAPOSIZIONEDEBITORIA)
+                    .dataEvento(adesso)
+                    .esito(EsitoEvento.KO)
+                    .descrizioneEsito(descrizioneAnomalia)
+                    .idDominio(rpt.getCodDominio())
+                    .idA2A(risolviCodApplicazione(pendenza.getIdApplicazione()))
+                    .codDocumento(codDocumento)
+                    .idPendenza(pendenza.getIdPendenza())
+                    .transactionId(TransactionContext.getTransactionId())
+                    .build();
+            // L'invio e' differito al commit (code review 2026-11-05): a questo punto la
+            // transazione e' ancora aperta (segnalaAnomalia sopra e la coda avvisatura/notifica
+            // sotto possono ancora fallire e provocare un rollback) - un invio immediato
+            // registrerebbe sul GDE un'anomalia per una ricevuta che poi risulta MAI acquisita,
+            // e un eventuale retry ne genererebbe un secondo. registerSynchronization non
+            // richiede apertura esplicita di contesto: la sincronizzazione e' sempre attiva qui,
+            // essendo questo metodo @Transactional.
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    paForNodeGdeService.inviaEventoAsync(eventoAnomalia);
+                }
+            });
         } else {
             if (!note.isEmpty()) {
                 pendenza.setDescrizioneStato(String.join("; ", note));

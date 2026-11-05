@@ -317,6 +317,8 @@ CREATE TABLE IF NOT EXISTS documenti
 	data_creazione TIMESTAMP NOT NULL,
 	data_ultimo_aggiornamento TIMESTAMP NOT NULL,
 	versione BIGINT NOT NULL DEFAULT 0,
+	anomalo BOOLEAN NOT NULL,
+	descrizione_stato VARCHAR(255),
 	-- fk/pk columns
 	id BIGINT DEFAULT nextval('seq_documenti') NOT NULL,
 	id_dominio BIGINT NOT NULL,

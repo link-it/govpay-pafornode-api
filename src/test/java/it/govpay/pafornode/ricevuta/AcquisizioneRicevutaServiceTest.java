@@ -2,6 +2,9 @@ package it.govpay.pafornode.ricevuta;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -14,10 +17,13 @@ import java.util.UUID;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.transaction.TestTransaction;
 import org.springframework.transaction.annotation.Transactional;
 
 import it.govpay.common.entity.ApplicazioneEntity;
@@ -49,6 +55,9 @@ import it.govpay.pendenze.model.TipologiaOpzionePagamento;
 import it.govpay.pendenze.repository.NotificaRepository;
 import it.govpay.pendenze.repository.PagamentoRepository;
 import it.govpay.pendenze.repository.RendicontazioneRepository;
+import it.govpay.pafornode.gde.PaForNodeGdeService;
+import it.govpay.common.gde.GdeCostanti;
+import it.govpay.common.gde.GdeEventInfo;
 
 /**
  * Verifica {@link AcquisizioneRicevutaService} sul percorso principale (RPT trovata,
@@ -113,6 +122,9 @@ class AcquisizioneRicevutaServiceTest {
 
     @Autowired
     private NotificaAppIoRepository notificaAppIoRepository;
+
+    @MockitoBean
+    private PaForNodeGdeService paForNodeGdeService;
 
     @Test
     void esitoOkCreaPagamentoEsegueLaPendenzaEAccodaAvvisatura() {
@@ -462,6 +474,66 @@ class AcquisizioneRicevutaServiceTest {
         assertThat(pendenza.getDescrizioneStato()).isEqualTo("Ricevuta acquisita su un'opzione di pagamento gia' annullata");
         assertThat(pendenza.getOpzionePagamento().getStato()).isEqualTo(StatoOpzionePagamento.ANNULLATA);
         assertThat(pagamentoRepository.findByCodDominioAndIuv(rpt.getCodDominio(), rpt.getIuv())).hasSize(1);
+
+        // Issue #14: l'anomalia si riflette anche sull'intera PosizioneDebitoria...
+        PosizioneDebitoria posizione = pendenza.getOpzionePagamento().getPosizioneDebitoria();
+        assertThat(posizione.isAnomalo()).isTrue();
+        assertThat(posizione.getDescrizioneStato())
+                .isEqualTo("Ricevuta acquisita su un'opzione di pagamento gia' annullata");
+
+        // Code review 2026-11-05: l'evento GDE non deve essere inviato prima del commit della
+        // transazione - a questo punto la transazione e' ancora aperta (gestita dal test runner,
+        // vedi Javadoc di classe), quindi nessun invio deve essere ancora avvenuto.
+        verifyNoInteractions(paForNodeGdeService);
+
+        // Commit esplicito (stesso pattern di RicevutaRendicontazioneServiceTest/
+        // GeneratoreProgressivoIuvTest in govpay-common-pendenze): solo dopo un commit
+        // effettivo l'invio, registrato tramite TransactionSynchronization#afterCommit, deve
+        // scattare.
+        TestTransaction.flagForCommit();
+        TestTransaction.end();
+        TestTransaction.start();
+
+        // ...e viene registrata come evento dedicato sul Giornale degli Eventi, solo ora.
+        verify(paForNodeGdeService).inviaEventoAsync(argThat((GdeEventInfo evento) ->
+                evento.getTipoEvento().equals(GdeCostanti.APIPAGOPA_TIPOEVENTO_SEGNALAZIONEANOMALIAPOSIZIONEDEBITORIA)
+                        && evento.getIdA2A().equals("APP-ANNULLATA")
+                        && evento.getCodDocumento().equals(posizione.getCodDocumento())
+                        && evento.getIdPendenza().equals(pendenza.getIdPendenza())
+                        && evento.getIdDominio().equals(rpt.getCodDominio())));
+    }
+
+    /**
+     * Issue #14, code review 2026-11-05: se la transazione va in rollback dopo che
+     * {@code segnalaAnomalia} e' stata chiamata (es. un conflitto di versione al commit), non
+     * deve restare nessun evento GDE per una ricevuta che risulta MAI acquisita - a differenza
+     * del comportamento precedente (invio immediato, dentro la transazione ancora aperta).
+     */
+    @Test
+    @DisplayName("nessun evento GDE di anomalia se la transazione va in rollback")
+    void nessunEventoAnomaliaSeLaTransazioneVaInRollback() {
+        ApplicazioneEntity applicazione = applicazionePersistita("APP-ANNULLATA-RB");
+        Long idDominio = dominioPersistito("77777777777");
+        Long idTipoVersamentoDominio = tipoVersamentoDominioPersistito(idDominio, false, false, false);
+        Pendenza pendenza = pendenzaPersistita(applicazione.getId(), idDominio, idTipoVersamentoDominio,
+                "100000000000000099");
+        pendenza.getOpzionePagamento().setStato(StatoOpzionePagamento.ANNULLATA);
+        pendenza.setStato(StatoPendenza.ANNULLATO);
+        persistAndFlush(pendenza);
+        Rpt rpt = rptAccettataNodoPersistita(pendenza);
+
+        DatiRicevutaPagamento dati = new DatiRicevutaPagamento("receipt-annullata-rb", true, ADESSO, 10.00, "PSP1",
+                "Psp Uno", "ID-PSP-1", "CH-1", "BBT", "<Receipt/>".getBytes(StandardCharsets.UTF_8),
+                List.of(new DatiRicevutaPagamento.DatiTrasferimentoRicevuto(1, 10.00)));
+
+        service.acquisisci(pendenza, rpt, dati);
+
+        // Rollback esplicito (flag di default del test runner, @Transactional di classe) invece
+        // del commit: la sincronizzazione afterCommit non deve scattare.
+        TestTransaction.end();
+        TestTransaction.start();
+
+        verifyNoInteractions(paForNodeGdeService);
     }
 
     /**

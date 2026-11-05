@@ -64,6 +64,9 @@ public class PaForNodeGdeService extends AbstractGdeService {
         evento.setEsito(eventInfo.getEsito());
         evento.setDettaglioEsito(eventInfo.getDescrizioneEsito());
         evento.setIdDominio(eventInfo.getIdDominio());
+        evento.setIdA2A(eventInfo.getIdA2A());
+        evento.setCodDocumento(eventInfo.getCodDocumento());
+        evento.setIdPendenza(eventInfo.getIdPendenza());
         evento.setClusterId(eventInfo.getClusterId());
         evento.setTransactionId(eventInfo.getTransactionId());
         if (eventInfo.getStatusCodeRisposta() != null) {

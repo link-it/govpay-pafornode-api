@@ -10,11 +10,17 @@ import java.util.Objects;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import jakarta.servlet.http.HttpServletRequest;
+
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
 import it.govpay.common.utils.IuvUtils;
+import it.govpay.common.auth.AuthTypeAccessor;
+import it.govpay.common.auth.spi.AuthType;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
+import it.govpay.pafornode.gde.SoapTransportUtils;
+import it.govpay.pafornode.security.PaForNodePrincipalLoader;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.Pagamento;
 import it.govpay.pendenze.entity.Pendenza;
@@ -62,6 +68,44 @@ public final class PaForNodeChecks {
 			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
 					"Autorizzazione fallita: principal fornito (" + principalAutenticato
 							+ ") non valido per l'intermediario (" + intermediario.getCodIntermediario() + ").",
+					codDominio);
+		}
+	}
+
+	/**
+	 * Issue #10, finding #2 di revisione (2026-11-05): {@code paVerifyPaymentNotice}/{@code
+	 * paGetPayment}/{@code paGetPaymentV2} non sono previste sul canale interno — SOLO {@code
+	 * paSendRT}/{@code paSendRTV2} lo sono ({@code PaSendRTService#verificaCanale} gestisce
+	 * la propria autorizzazione da solo, diversa perche' quel canale ammette entrambi i tipi
+	 * di autenticazione). Qui si rifiuta SEMPRE una chiamata arrivata sul path interno,
+	 * qualunque sia l'identita' autenticata: prima queste operazioni verificavano solo il
+	 * confronto principal/intermediario (sempre superabile da un intermediario autenticato
+	 * per davvero, su qualunque path, dato che Spring-WS dispatcha per payload-root e non per
+	 * path) — un intermediario autenticato sul canale interno poteva quindi eseguire
+	 * {@code paGetPayment} li', bypassando di fatto la restrizione di canale che l'issue
+	 * prevede solo per l'invio delle ricevute.
+	 *
+	 * <p>Bug di revisione corretto 2026-11-05: rifiutava solo in base al PATH (canale
+	 * interno), non anche in base al METODO di autenticazione usato sul path Nodo — un'
+	 * utenza applicativa (autenticata con {@code AuthType.BASIC}/{@code LDAP}) il cui
+	 * {@code principal} coincidesse (anche per puro caso) con quello di un intermediario
+	 * registrato superava comunque il successivo confronto principal/intermediario e poteva
+	 * eseguire l'operazione su {@code /ws} con credenziali del canale interno. Ora si
+	 * rifiuta anche quando {@link PaForNodePrincipalLoader#autenticaUtenzaApplicativa} e'
+	 * vero, indipendentemente dal path: queste tre operazioni devono SEMPRE essere
+	 * autenticate con un metodo da intermediario (SSL/SSL_HEADER/HEADER), mai da utenza
+	 * applicativa.
+	 */
+	public static void verificaCanaleNodo(String codDominio) {
+		HttpServletRequest request = SoapTransportUtils.currentHttpServletRequest();
+		if (SoapTransportUtils.isPathCanaleInterno(request)) {
+			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
+					"Operazione non disponibile sul canale interno.", codDominio);
+		}
+		AuthType authType = request != null ? AuthTypeAccessor.current(request) : null;
+		if (PaForNodePrincipalLoader.autenticaUtenzaApplicativa(authType)) {
+			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR,
+					"Autorizzazione fallita: metodo di autenticazione non ammesso per questa operazione.",
 					codDominio);
 		}
 	}

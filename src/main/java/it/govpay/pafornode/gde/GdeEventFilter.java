@@ -73,6 +73,14 @@ public class GdeEventFilter extends OncePerRequestFilter {
     private static final String UNKNOWN_OPERATION = "UNKNOWN";
     private static final String BINARY_PLACEHOLDER = "binary";
     private static final int MAX_CAPTURE_BYTES = 65536;
+    /**
+     * Operatore richiedente di un invio sul canale interno (issue #10, govpay-rt-batch/
+     * govpay-console-api) — assente sulla scansione automatica di rt-batch. Bug di revisione
+     * corretto 2026-11-04: letto SOLO sul canale interno ({@link
+     * SoapTransportUtils#isPathCanaleInterno}) — prima veniva copiato comunque, permettendo a
+     * una chiamata sul canale Nodo di attribuirsi un operatore arbitrario nel GDE.
+     */
+    private static final String ON_BEHALF_OF_HEADER = "GOVPAY-ON-BEHALF-OF";
 
     private final PaForNodeGdeService paForNodeGdeService;
     private final Clock clock;
@@ -134,6 +142,7 @@ public class GdeEventFilter extends OncePerRequestFilter {
                 .esito(esito)
                 .descrizioneEsito(descrizioneEsito(request, error, faultCode))
                 .principal(currentPrincipal(request))
+                .utente(SoapTransportUtils.isPathCanaleInterno(request) ? request.getHeader(ON_BEHALF_OF_HEADER) : null)
                 .urlRichiesta(fullUrl(request))
                 .metodoHttp(request.getMethod())
                 .headersRichiesta(extractRequestHeaders(request))

@@ -110,6 +110,7 @@ public class PaVerifyPaymentNoticeService {
 			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO, codDominio);
 		}
 
+		PaForNodeChecks.verificaCanaleNodo(codDominio);
 		IntermediarioEntity intermediario = intermediarioRepository.findByCodIntermediario(request.getIdBrokerPA())
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_ID_INTERMEDIARIO_ERRATO, codDominio));
 		PaForNodeChecks.verificaPrincipalAutenticato(intermediario, codDominio);

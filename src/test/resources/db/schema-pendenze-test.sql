@@ -458,7 +458,8 @@ CREATE TABLE IF NOT EXISTS versamenti
 	-- fk/pk keys constraints
 	-- Nessuna FK verso tipi_vers_domini/tipi_versamento/applicazioni (M4, stessa ragione di
 	-- documenti sopra) — presenti invece nel legacy reale.
-	CONSTRAINT fk_vrs_id_documento FOREIGN KEY (id_documento) REFERENCES documenti(id),
+	-- Nessuna FK su id_documento, come nel core: gov_pay.sql toglie fk_vrs_id_documento per
+	-- le prestazioni.
 	CONSTRAINT fk_vrs_id_opzione_pagamento FOREIGN KEY (id_opzione_pagamento) REFERENCES opzioni_pagamento(id),
 	CONSTRAINT pk_versamenti PRIMARY KEY (id)
 );
@@ -497,7 +498,8 @@ CREATE TABLE IF NOT EXISTS singoli_versamenti
 	-- unique constraints
 	CONSTRAINT unique_sng_id_voce UNIQUE (id_versamento, indice_dati),
 	-- fk/pk keys constraints
-	CONSTRAINT fk_sng_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
+	-- Nessuna FK su id_versamento, come nel core: gov_pay.sql toglie fk_sng_id_versamento per
+	-- le prestazioni.
 	CONSTRAINT pk_singoli_versamenti PRIMARY KEY (id)
 );
 
@@ -732,14 +734,13 @@ CREATE TABLE IF NOT EXISTS rpt
 	id BIGINT DEFAULT nextval('seq_rpt') NOT NULL,
 	-- Nullable dall'issue #6/govpay-pafornode-api: una ricevuta senza pendenza (stazione in
 	-- broadcast) viene comunque salvata. id_applicazione e' popolata solo in quel caso (vedi
-	-- Javadoc di classe di Rpt in govpay-common-pendenze).
+	-- Javadoc di classe di Rpt in govpay-common-pendenze). Nessuna FK su rpt, come nel core: gov_pay.sql toglie
+	-- fk_rpt_id_versamento per le prestazioni e non dichiara FK su id_applicazione.
 	id_versamento BIGINT,
 	id_applicazione BIGINT,
 	-- unique constraints
 	CONSTRAINT unique_rpt_id_transazione UNIQUE (iuv, ccp, cod_dominio),
 	-- fk/pk keys constraints
-	CONSTRAINT fk_rpt_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
-	CONSTRAINT fk_rpt_id_applicazione FOREIGN KEY (id_applicazione) REFERENCES applicazioni(id),
 	CONSTRAINT pk_rpt PRIMARY KEY (id)
 );
 
@@ -847,7 +848,8 @@ CREATE TABLE IF NOT EXISTS allegati
 	id BIGINT DEFAULT nextval('seq_allegati') NOT NULL,
 	id_versamento BIGINT NOT NULL,
 	-- fk/pk keys constraints
-	CONSTRAINT fk_all_id_versamento FOREIGN KEY (id_versamento) REFERENCES versamenti(id),
+	-- Nessuna FK su id_versamento, come nel core: gov_pay.sql toglie fk_all_id_versamento per
+	-- le prestazioni.
 	CONSTRAINT pk_allegati PRIMARY KEY (id)
 );
 
@@ -870,7 +872,7 @@ CREATE TABLE IF NOT EXISTS pagamenti
 	-- unique constraints
 	CONSTRAINT unique_pag_id_riscossione UNIQUE (cod_dominio, iuv, iur, indice_dati),
 	-- fk/pk keys constraints
-	CONSTRAINT fk_pag_id_rpt FOREIGN KEY (id_rpt) REFERENCES rpt(id),
+	-- Nessuna FK su id_rpt, come nel core: gov_pay.sql toglie fk_pag_id_rpt per le prestazioni.
 	CONSTRAINT pk_pagamenti PRIMARY KEY (id)
 );
 

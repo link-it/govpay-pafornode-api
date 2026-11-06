@@ -12,9 +12,9 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.StTransferType;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtMapEntry;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtMetadata;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtRichiestaMarcaDaBollo;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtMapEntry;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtMetadata;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtRichiestaMarcaDaBollo;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IbanAccreditoEntity;
 import it.govpay.common.entity.TributoEntity;
@@ -91,7 +91,7 @@ public class CtPaymentPaV2Builder {
 		CtPaymentPAV2 ctPayment = new CtPaymentPAV2();
 		ctPayment.setCreditorReferenceId(pendenza.getIuv());
 		ctPayment.setPaymentAmount(importoTotaleConSend(pendenza));
-		ctPayment.setDueDate(XmlDateUtils.toXmlDate(DueDateCalculator.calcola(pendenza, numeroGiorniValiditaPendenza)));
+		ctPayment.setDueDate(DueDateCalculator.calcola(pendenza, numeroGiorniValiditaPendenza));
 		// Un'unica opzione di pagamento gestita: sempre l'ultima (e unica) rata.
 		ctPayment.setLastPayment(true);
 		ctPayment.setDescription(descrizione != null ? descrizione : " ");
@@ -146,7 +146,7 @@ public class CtPaymentPaV2Builder {
 			}
 			transfer.setMetadata(metadata);
 
-			transferList.getTransfer().add(transfer);
+			transferList.getTransfers().add(transfer);
 			indice++;
 		}
 
@@ -194,7 +194,7 @@ public class CtPaymentPaV2Builder {
 		for (DettaglioContabile dettaglio : dettagli) {
 			aggiungiEntries(metadata, dettaglio);
 		}
-		return metadata.getMapEntry().isEmpty() ? null : metadata;
+		return metadata.getMapEntries().isEmpty() ? null : metadata;
 	}
 
 	private static void aggiungiEntries(CtMetadata metadata, DettaglioContabile dettaglio) {
@@ -248,7 +248,7 @@ public class CtPaymentPaV2Builder {
 		CtMapEntry mapEntry = new CtMapEntry();
 		mapEntry.setKey(key);
 		mapEntry.setValue(value);
-		metadata.getMapEntry().add(mapEntry);
+		metadata.getMapEntries().add(mapEntry);
 	}
 
 	private static void entryImportoCentesimi(CtMetadata metadata, String key, BigDecimal importo) {
@@ -258,6 +258,6 @@ public class CtPaymentPaV2Builder {
 		CtMapEntry mapEntry = new CtMapEntry();
 		mapEntry.setKey(key);
 		mapEntry.setValue(importo.movePointRight(2).toBigInteger().toString());
-		metadata.getMapEntry().add(mapEntry);
+		metadata.getMapEntries().add(mapEntry);
 	}
 }

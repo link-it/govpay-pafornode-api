@@ -52,7 +52,7 @@ class PaForNodeEndpointFaultMappingTest {
 	void paSendRTMappaLaViolazioneDelVincoloSuReceiptDuplicata() {
 		when(paSendRTService.eseguiSendRT(any())).thenThrow(new DataIntegrityViolationException("unique_rpt_id_transazione"));
 
-		var risposta = endpoint.paSendRT(richiestaSendRT()).getValue();
+		var risposta = endpoint.paSendRT(richiestaSendRT());
 
 		assertThat(risposta.getFault().getFaultCode()).isEqualTo(FaultPa.PAA_RECEIPT_DUPLICATA.name());
 	}
@@ -62,7 +62,7 @@ class PaForNodeEndpointFaultMappingTest {
 		when(paSendRTService.eseguiSendRTV2(any()))
 				.thenThrow(new DataIntegrityViolationException("unique_rpt_id_transazione"));
 
-		var risposta = endpoint.paSendRTV2(richiestaSendRTV2()).getValue();
+		var risposta = endpoint.paSendRTV2(richiestaSendRTV2());
 
 		assertThat(risposta.getFault().getFaultCode()).isEqualTo(FaultPa.PAA_RECEIPT_DUPLICATA.name());
 	}
@@ -78,7 +78,7 @@ class PaForNodeEndpointFaultMappingTest {
 		when(paSendRTService.eseguiSendRT(any()))
 				.thenThrow(new DataIntegrityViolationException("fk_pag_id_rpt violated"));
 
-		var risposta = endpoint.paSendRT(richiestaSendRT()).getValue();
+		var risposta = endpoint.paSendRT(richiestaSendRT());
 
 		assertThat(risposta.getFault().getFaultCode()).isEqualTo(FaultPa.PAA_SYSTEM_ERROR.name());
 	}
@@ -89,7 +89,7 @@ class PaForNodeEndpointFaultMappingTest {
 		when(paSendRTService.eseguiSendRTV2(any()))
 				.thenThrow(new DataIntegrityViolationException("fk_pag_id_rpt violated"));
 
-		var risposta = endpoint.paSendRTV2(richiestaSendRTV2()).getValue();
+		var risposta = endpoint.paSendRTV2(richiestaSendRTV2());
 
 		assertThat(risposta.getFault().getFaultCode()).isEqualTo(FaultPa.PAA_SYSTEM_ERROR.name());
 	}

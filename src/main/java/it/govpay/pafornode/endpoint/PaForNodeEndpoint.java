@@ -1,7 +1,5 @@
 package it.govpay.pafornode.endpoint;
 
-import jakarta.xml.bind.JAXBElement;
-
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.ws.server.endpoint.annotation.Endpoint;
 import org.springframework.ws.server.endpoint.annotation.PayloadRoot;
@@ -9,7 +7,6 @@ import org.springframework.ws.server.endpoint.annotation.RequestPayload;
 import org.springframework.ws.server.endpoint.annotation.ResponsePayload;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtQrCode;
-import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
@@ -20,8 +17,8 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Request;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Response;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtFaultBean;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtFaultBean;
+import it.gov.pagopa.pagopa_api.pa.pafornode.StOutcome;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.gde.GdeFaultContext;
@@ -51,7 +48,6 @@ public class PaForNodeEndpoint {
 	private final PaGetPaymentActivationService paGetPaymentActivationService;
 	private final PaGetPaymentV2ActivationService paGetPaymentV2ActivationService;
 	private final PaSendRTService paSendRTService;
-	private final ObjectFactory objectFactory = new ObjectFactory();
 
 	public PaForNodeEndpoint(PaVerifyPaymentNoticeService paVerifyPaymentNoticeService,
 			PaGetPaymentActivationService paGetPaymentActivationService,
@@ -64,7 +60,7 @@ public class PaForNodeEndpoint {
 
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paVerifyPaymentNoticeReq")
 	@ResponsePayload
-	public JAXBElement<PaVerifyPaymentNoticeRes> paVerifyPaymentNotice(@RequestPayload PaVerifyPaymentNoticeReq request) {
+	public PaVerifyPaymentNoticeRes paVerifyPaymentNotice(@RequestPayload PaVerifyPaymentNoticeReq request) {
 		CtQrCode qrCode = request.getQrCode();
 		String numeroAvviso = qrCode.getNoticeNumber();
 		String codDominio = qrCode.getFiscalCode();
@@ -76,7 +72,7 @@ public class PaForNodeEndpoint {
 		} catch (RuntimeException e) {
 			response = buildFault(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}
-		return objectFactory.createPaVerifyPaymentNoticeRes(response);
+		return response;
 	}
 
 	/**
@@ -93,7 +89,7 @@ public class PaForNodeEndpoint {
 	 */
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paGetPaymentReq")
 	@ResponsePayload
-	public JAXBElement<PaGetPaymentRes> paGetPayment(@RequestPayload PaGetPaymentReq request) {
+	public PaGetPaymentRes paGetPayment(@RequestPayload PaGetPaymentReq request) {
 		CtQrCode qrCode = request.getQrCode();
 		String numeroAvviso = qrCode.getNoticeNumber();
 		String codDominio = qrCode.getFiscalCode();
@@ -105,7 +101,7 @@ public class PaForNodeEndpoint {
 		} catch (RuntimeException e) {
 			response = buildFaultGetPayment(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}
-		return objectFactory.createPaGetPaymentRes(response);
+		return response;
 	}
 
 	private static PaGetPaymentRes buildFaultGetPayment(NdpException e) {
@@ -129,7 +125,7 @@ public class PaForNodeEndpoint {
 	 */
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paGetPaymentV2Request")
 	@ResponsePayload
-	public JAXBElement<PaGetPaymentV2Response> paGetPaymentV2(@RequestPayload PaGetPaymentV2Request request) {
+	public PaGetPaymentV2Response paGetPaymentV2(@RequestPayload PaGetPaymentV2Request request) {
 		CtQrCode qrCode = request.getQrCode();
 		String numeroAvviso = qrCode.getNoticeNumber();
 		String codDominio = qrCode.getFiscalCode();
@@ -141,7 +137,7 @@ public class PaForNodeEndpoint {
 		} catch (RuntimeException e) {
 			response = buildFaultGetPaymentV2(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}
-		return objectFactory.createPaGetPaymentV2Response(response);
+		return response;
 	}
 
 	private static PaGetPaymentV2Response buildFaultGetPaymentV2(NdpException e) {
@@ -183,7 +179,7 @@ public class PaForNodeEndpoint {
 	 */
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paSendRTReq")
 	@ResponsePayload
-	public JAXBElement<PaSendRTRes> paSendRT(@RequestPayload PaSendRTReq request) {
+	public PaSendRTRes paSendRT(@RequestPayload PaSendRTReq request) {
 		String codDominio = request.getReceipt().getFiscalCode();
 		PaSendRTRes response;
 		try {
@@ -197,7 +193,7 @@ public class PaForNodeEndpoint {
 		} catch (RuntimeException e) {
 			response = buildFaultSendRT(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}
-		return objectFactory.createPaSendRTRes(response);
+		return response;
 	}
 
 	/**
@@ -231,7 +227,7 @@ public class PaForNodeEndpoint {
 	/** Come {@link #paSendRT}, per {@code paSendRTV2} — stesso motivo per il catch dedicato. */
 	@PayloadRoot(namespace = NAMESPACE, localPart = "paSendRTV2Request")
 	@ResponsePayload
-	public JAXBElement<PaSendRTV2Response> paSendRTV2(@RequestPayload PaSendRTV2Request request) {
+	public PaSendRTV2Response paSendRTV2(@RequestPayload PaSendRTV2Request request) {
 		String codDominio = request.getReceipt().getFiscalCode();
 		PaSendRTV2Response response;
 		try {
@@ -245,7 +241,7 @@ public class PaForNodeEndpoint {
 		} catch (RuntimeException e) {
 			response = buildFaultSendRTV2(new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e));
 		}
-		return objectFactory.createPaSendRTV2Response(response);
+		return response;
 	}
 
 	private static PaSendRTV2Response buildFaultSendRTV2(NdpException e) {

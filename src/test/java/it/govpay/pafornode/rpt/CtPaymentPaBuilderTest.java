@@ -101,7 +101,7 @@ class CtPaymentPaBuilderTest {
 
 		CtPaymentPA ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		CtTransferPA transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPA transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getIBAN()).isEqualTo("IT00X0000000000000000000000");
 		assertThat(transfer.getFiscalCodePA()).isEqualTo("12345678901");
 		assertThat(transfer.getTransferCategory()).isEqualTo(TipoContabilita.CAPITOLO.getCodifica() + "/001");
@@ -121,7 +121,7 @@ class CtPaymentPaBuilderTest {
 
 		CtPaymentPA ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		CtTransferPA transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPA transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getTransferCategory()).isEqualTo(TipoContabilita.SIOPE.getCodifica() + "/999");
 	}
 
@@ -141,7 +141,7 @@ class CtPaymentPaBuilderTest {
 
 		CtPaymentPA ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		CtTransferPA transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPA transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getTransferCategory()).isEqualTo(TipoContabilita.CAPITOLO.getCodifica() + "/999");
 	}
 
@@ -153,12 +153,12 @@ class CtPaymentPaBuilderTest {
 		CtPaymentPA ctPayment = builder.costruisci(pendenza, dominio(), null);
 
 		assertThat(ctPayment.getPaymentAmount()).isEqualByComparingTo(BigDecimal.valueOf(11.23));
-		CtTransferPA transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPA transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getTransferAmount()).isEqualByComparingTo(BigDecimal.valueOf(11.23));
-		assertThat(transfer.getMetadata().getMapEntry()).hasSize(1);
-		assertThat(transfer.getMetadata().getMapEntry().get(0).getKey())
+		assertThat(transfer.getMetadata().getMapEntries()).hasSize(1);
+		assertThat(transfer.getMetadata().getMapEntries().get(0).getKey())
 				.isEqualTo(CtPaymentPaBuilder.NOTIFICATION_FEE_METADATA_KEY);
-		assertThat(transfer.getMetadata().getMapEntry().get(0).getValue()).isEqualTo("123");
+		assertThat(transfer.getMetadata().getMapEntries().get(0).getValue()).isEqualTo("123");
 	}
 
 	@Test

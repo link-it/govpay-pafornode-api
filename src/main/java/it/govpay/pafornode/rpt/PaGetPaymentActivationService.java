@@ -12,7 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.gov.pagopa.pagopa_api.pa.pafornode.StOutcome;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;

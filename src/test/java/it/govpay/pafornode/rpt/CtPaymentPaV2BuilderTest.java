@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferPAV2;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtMapEntry;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtMapEntry;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IbanAccreditoEntity;
 import it.govpay.common.entity.TipoContabilita;
@@ -90,7 +90,7 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getIBAN()).isEqualTo("IT00X0000000000000000000000");
 		assertThat(transfer.getFiscalCodePA()).isEqualTo("12345678901");
 		assertThat(transfer.getCompanyName()).isEqualTo("Comune di Test");
@@ -107,7 +107,7 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getIBAN()).isNull();
 		assertThat(transfer.getRichiestaMarcaDaBollo()).isNotNull();
 		assertThat(transfer.getRichiestaMarcaDaBollo().getHashDocumento())
@@ -127,7 +127,7 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getRichiestaMarcaDaBollo().getTipoBollo()).isEqualTo("01");
 	}
 
@@ -158,12 +158,12 @@ class CtPaymentPaV2BuilderTest {
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
 		assertThat(ctPayment.getPaymentAmount()).isEqualByComparingTo(BigDecimal.valueOf(11.23));
-		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfer().get(0);
+		CtTransferPAV2 transfer = ctPayment.getTransferList().getTransfers().get(0);
 		assertThat(transfer.getTransferAmount()).isEqualByComparingTo(BigDecimal.valueOf(11.23));
-		assertThat(transfer.getMetadata().getMapEntry()).hasSize(1);
-		assertThat(transfer.getMetadata().getMapEntry().get(0).getKey())
+		assertThat(transfer.getMetadata().getMapEntries()).hasSize(1);
+		assertThat(transfer.getMetadata().getMapEntries().get(0).getKey())
 				.isEqualTo(CtPaymentPaBuilder.NOTIFICATION_FEE_METADATA_KEY);
-		assertThat(transfer.getMetadata().getMapEntry().get(0).getValue()).isEqualTo("123");
+		assertThat(transfer.getMetadata().getMapEntries().get(0).getValue()).isEqualTo("123");
 	}
 
 	@Test
@@ -175,7 +175,7 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		List<CtMapEntry> entries = ctPayment.getTransferList().getTransfer().get(0).getMetadata().getMapEntry();
+		List<CtMapEntry> entries = ctPayment.getTransferList().getTransfers().get(0).getMetadata().getMapEntries();
 		assertThat(entries).extracting(CtMapEntry::getKey, CtMapEntry::getValue).containsExactlyInAnyOrder(
 				tuple("RC_AC", "2026"), tuple("RC_CU", "UFF01"), tuple("RC_CAP", "CAP01"), tuple("RC_IMP", "1000"));
 	}
@@ -188,7 +188,7 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		List<CtMapEntry> entries = ctPayment.getTransferList().getTransfer().get(0).getMetadata().getMapEntry();
+		List<CtMapEntry> entries = ctPayment.getTransferList().getTransfers().get(0).getMetadata().getMapEntries();
 		assertThat(entries).hasSize(1);
 		assertThat(entries.get(0).getKey()).isEqualTo(CtPaymentPaBuilder.NOTIFICATION_FEE_METADATA_KEY);
 		assertThat(entries.get(0).getValue()).isEqualTo("123");
@@ -203,7 +203,7 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		List<CtMapEntry> entries = ctPayment.getTransferList().getTransfer().get(0).getMetadata().getMapEntry();
+		List<CtMapEntry> entries = ctPayment.getTransferList().getTransfers().get(0).getMetadata().getMapEntries();
 		assertThat(entries).extracting(CtMapEntry::getKey, CtMapEntry::getValue)
 				.containsExactly(tuple("CHIAVE_X", "valore-x"));
 	}
@@ -214,6 +214,6 @@ class CtPaymentPaV2BuilderTest {
 
 		CtPaymentPAV2 ctPayment = builder.costruisci(pendenza, dominio(), null);
 
-		assertThat(ctPayment.getTransferList().getTransfer().get(0).getMetadata()).isNull();
+		assertThat(ctPayment.getTransferList().getTransfers().get(0).getMetadata()).isNull();
 	}
 }

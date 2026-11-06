@@ -2,11 +2,8 @@ package it.govpay.pafornode.endpoint;
 
 import java.math.BigDecimal;
 import java.time.Clock;
-import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
-
-import javax.xml.datatype.XMLGregorianCalendar;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -17,7 +14,7 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentOptionsDescriptionListPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.StAmountOption;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.gov.pagopa.pagopa_api.pa.pafornode.StOutcome;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
@@ -31,7 +28,6 @@ import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.rpt.AttualizzazionePendenzaService;
 import it.govpay.pafornode.rpt.UnitaOperativaResolver;
-import it.govpay.pafornode.rpt.XmlDateUtils;
 import it.govpay.pafornode.verifica.ApplicazioneDominioResolver;
 import it.govpay.pafornode.verifica.PendenzaVerificataMapper;
 import it.govpay.pafornode.verifica.VerificaClient;
@@ -175,7 +171,7 @@ public class PaVerifyPaymentNoticeService {
 		opzione.setOptions(StAmountOption.EQ);
 		opzione.setAmount(importoTotaleConSend(pendenza));
 		opzione.setDetailDescription(descrizione);
-		opzione.setDueDate(toXmlDate(pendenza.getDataValidita()));
+		opzione.setDueDate(pendenza.getDataValidita() != null ? pendenza.getDataValidita().toLocalDate() : null);
 		// TODO allCCP: richiede di verificare che tutte le voci abbiano un IBAN di accredito
 		// postale (equivalente di VersamentoUtils#isAllIBANPostali) — non ancora implementato.
 		opzione.setAllCCP(false);
@@ -190,9 +186,5 @@ public class PaVerifyPaymentNoticeService {
 		BigDecimal importo = BigDecimal.valueOf(pendenza.getImporto());
 		return pendenza.getSendImportoTotale() != null
 				? importo.add(BigDecimal.valueOf(pendenza.getSendImportoTotale())) : importo;
-	}
-
-	private static XMLGregorianCalendar toXmlDate(OffsetDateTime data) {
-		return data == null ? null : XmlDateUtils.toXmlDate(data.toLocalDate());
 	}
 }

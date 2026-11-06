@@ -67,10 +67,9 @@ import it.govpay.gde.client.beans.EsitoEvento;
 import it.govpay.pafornode.gde.PaForNodeGdeService;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPAV2;
-import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.gov.pagopa.pagopa_api.pa.pafornode.StOutcome;
 import it.govpay.pafornode.rpt.CtPaymentPaBuilder;
 import it.govpay.pafornode.rpt.CtPaymentPaV2Builder;
 import it.govpay.pafornode.rpt.RptAttivazioneService;
@@ -298,7 +297,7 @@ class PaForNodeEndpointTest {
 			JAXBContext jaxbContext = JAXBContext.newInstance(PaGetPaymentRes.class);
 			Marshaller marshaller = jaxbContext.createMarshaller();
 			ByteArrayOutputStream output = new ByteArrayOutputStream();
-			marshaller.marshal(new ObjectFactory().createPaGetPaymentRes(risposta), output);
+			marshaller.marshal(risposta, output);
 			return output.toByteArray();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
@@ -313,7 +312,7 @@ class PaForNodeEndpointTest {
 			JAXBContext jaxbContext = JAXBContext.newInstance(PaGetPaymentV2Response.class);
 			Marshaller marshaller = jaxbContext.createMarshaller();
 			ByteArrayOutputStream output = new ByteArrayOutputStream();
-			marshaller.marshal(new ObjectFactory().createPaGetPaymentV2Response(risposta), output);
+			marshaller.marshal(risposta, output);
 			return output.toByteArray();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
@@ -455,7 +454,7 @@ class PaForNodeEndpointTest {
 		assertThat(risposta.getBody()).contains("<outcome>OK</outcome>",
 				"<fiscalCodePA>" + COD_DOMINIO + "</fiscalCodePA>",
 				"<companyName>Comune di Test</companyName>",
-				"<amount>16.0</amount>");
+				"<amount>16.00</amount>"); // stAmount: \d+\.\d{2}
 	}
 
 	/**

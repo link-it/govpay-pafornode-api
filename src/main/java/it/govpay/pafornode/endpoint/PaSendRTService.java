@@ -3,14 +3,14 @@ package it.govpay.pafornode.endpoint;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-
-import javax.xml.datatype.XMLGregorianCalendar;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.xml.bind.JAXBContext;
@@ -34,12 +34,11 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtReceipt;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtReceiptV2;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferPAReceiptV2;
-import it.gov.pagopa.pagopa_api.pa.pafornode.ObjectFactory;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Request;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaSendRTV2Response;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.StOutcome;
+import it.gov.pagopa.pagopa_api.pa.pafornode.StOutcome;
 import it.govpay.common.entity.ApplicazioneEntity;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IntermediarioEntity;
@@ -128,7 +127,6 @@ public class PaSendRTService {
 	private final UtenzaRepository utenzaRepository;
 	private final ApplicazioneRepository applicazioneRepository;
 	private final Clock clock;
-	private final ObjectFactory objectFactory = new ObjectFactory();
 	private final JAXBContext jaxbContext;
 	private final JAXBContext jaxbContextV2;
 
@@ -453,9 +451,9 @@ public class PaSendRTService {
 		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
 			throw new NdpException(FaultPa.PAA_SEMANTICA, "CreditorReferenceId non corrisponde", codDominio);
 		}
-		int numeroRichiesto = richiesta.getTransferList().getTransfer().size();
+		int numeroRichiesto = richiesta.getTransferList().getTransfers().size();
 		List<CtTransferPA> trasferimenti = ricevuta.getTransferList() != null
-				? ricevuta.getTransferList().getTransfer() : List.of();
+				? ricevuta.getTransferList().getTransfers() : List.of();
 		boolean numeroIncoerente = ricevuta.getOutcome() == StOutcome.OK
 				? trasferimenti.size() != numeroRichiesto
 				: !trasferimenti.isEmpty() && trasferimenti.size() != numeroRichiesto;
@@ -491,9 +489,9 @@ public class PaSendRTService {
 		if (!Objects.equals(identificativoRichiesto, identificativoRicevuto)) {
 			throw new NdpException(FaultPa.PAA_SEMANTICA, "UniqueIdentifierDebtor non corrisponde", codDominio);
 		}
-		int numeroRichiesto = richiesta.getTransferList().getTransfer().size();
+		int numeroRichiesto = richiesta.getTransferList().getTransfers().size();
 		List<CtTransferPAReceiptV2> trasferimenti = ricevuta.getTransferList() != null
-				? ricevuta.getTransferList().getTransfer() : List.of();
+				? ricevuta.getTransferList().getTransfers() : List.of();
 		boolean numeroIncoerente = ricevuta.getOutcome() == StOutcome.OK
 				? trasferimenti.size() != numeroRichiesto
 				: !trasferimenti.isEmpty() && trasferimenti.size() != numeroRichiesto;
@@ -526,9 +524,9 @@ public class PaSendRTService {
 		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
 			throw new NdpException(FaultPa.PAA_SEMANTICA, "CreditorReferenceId non corrisponde", codDominio);
 		}
-		int numeroRichiesto = richiesta.getTransferList().getTransfer().size();
+		int numeroRichiesto = richiesta.getTransferList().getTransfers().size();
 		List<CtTransferPA> trasferimenti = ricevuta.getTransferList() != null
-				? ricevuta.getTransferList().getTransfer() : List.of();
+				? ricevuta.getTransferList().getTransfers() : List.of();
 		boolean numeroIncoerente = ricevuta.getOutcome() == StOutcome.OK
 				? trasferimenti.size() != numeroRichiesto
 				: !trasferimenti.isEmpty() && trasferimenti.size() != numeroRichiesto;
@@ -560,9 +558,9 @@ public class PaSendRTService {
 		if (!Objects.equals(richiesta.getCreditorReferenceId(), ricevuta.getCreditorReferenceId())) {
 			throw new NdpException(FaultPa.PAA_SEMANTICA, "CreditorReferenceId non corrisponde", codDominio);
 		}
-		int numeroRichiesto = richiesta.getTransferList().getTransfer().size();
+		int numeroRichiesto = richiesta.getTransferList().getTransfers().size();
 		List<CtTransferPAReceiptV2> trasferimenti = ricevuta.getTransferList() != null
-				? ricevuta.getTransferList().getTransfer() : List.of();
+				? ricevuta.getTransferList().getTransfers() : List.of();
 		boolean numeroIncoerente = ricevuta.getOutcome() == StOutcome.OK
 				? trasferimenti.size() != numeroRichiesto
 				: !trasferimenti.isEmpty() && trasferimenti.size() != numeroRichiesto;
@@ -586,7 +584,7 @@ public class PaSendRTService {
 	private List<DatiTrasferimentoRicevuto> trasferimentiV1(CtReceipt receipt) {
 		List<DatiTrasferimentoRicevuto> trasferimenti = new ArrayList<>();
 		if (receipt.getTransferList() != null) {
-			for (CtTransferPA transfer : receipt.getTransferList().getTransfer()) {
+			for (CtTransferPA transfer : receipt.getTransferList().getTransfers()) {
 				trasferimenti.add(new DatiTrasferimentoRicevuto(transfer.getIdTransfer(),
 						transfer.getTransferAmount().doubleValue()));
 			}
@@ -597,7 +595,7 @@ public class PaSendRTService {
 	private List<DatiTrasferimentoRicevuto> trasferimentiV2(CtReceiptV2 receipt) {
 		List<DatiTrasferimentoRicevuto> trasferimenti = new ArrayList<>();
 		if (receipt.getTransferList() != null) {
-			for (CtTransferPAReceiptV2 transfer : receipt.getTransferList().getTransfer()) {
+			for (CtTransferPAReceiptV2 transfer : receipt.getTransferList().getTransfers()) {
 				trasferimenti.add(new DatiTrasferimentoRicevuto(transfer.getIdTransfer(),
 						transfer.getTransferAmount().doubleValue()));
 			}
@@ -614,9 +612,9 @@ public class PaSendRTService {
 	}
 
 	/** Stesso fallback-a-ora di prima: usato sia per {@link DatiRicevutaPagamento} sia per la ricostruzione "standin". */
-	private OffsetDateTime convertiData(XMLGregorianCalendar paymentDateTime) {
+	private OffsetDateTime convertiData(LocalDateTime paymentDateTime) {
 		return paymentDateTime != null
-				? paymentDateTime.toGregorianCalendar().toZonedDateTime().toOffsetDateTime()
+				? paymentDateTime.atZone(ZoneId.systemDefault()).toOffsetDateTime()
 				: OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC);
 	}
 
@@ -624,7 +622,7 @@ public class PaSendRTService {
 		try {
 			Marshaller marshaller = jaxbContext.createMarshaller();
 			ByteArrayOutputStream output = new ByteArrayOutputStream();
-			marshaller.marshal(objectFactory.createPaSendRTReq(request), output);
+			marshaller.marshal(request, output);
 			return output.toByteArray();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);
@@ -635,7 +633,7 @@ public class PaSendRTService {
 		try {
 			Marshaller marshaller = jaxbContextV2.createMarshaller();
 			ByteArrayOutputStream output = new ByteArrayOutputStream();
-			marshaller.marshal(objectFactory.createPaSendRTV2Request(request), output);
+			marshaller.marshal(request, output);
 			return output.toByteArray();
 		} catch (JAXBException e) {
 			throw new IllegalStateException(e);

@@ -19,12 +19,6 @@ import org.springframework.ws.wsdl.wsdl11.Wsdl11Definition;
 
 import java.util.List;
 
-import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
-import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
-import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
-import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Response;
-import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeReq;
-import it.gov.pagopa.pagopa_api.pa.pafornode.PaVerifyPaymentNoticeRes;
 import it.govpay.pafornode.gde.OperationIdEndpointInterceptor;
 import it.govpay.pafornode.gde.SoapTransportUtils;
 
@@ -106,20 +100,9 @@ public class WsConfig implements WsConfigurer {
 	@Bean
 	public Jaxb2Marshaller marshaller() {
 		Jaxb2Marshaller marshaller = new Jaxb2Marshaller();
-		// setClassesToBeBound, non setContextPaths: le classi generate da XJC per
-		// paForNode.xsd non hanno @XmlRootElement (il root e' dichiarato nello schema solo
-		// come <element>, non <complexType> con binding diretto) — Jaxb2Marshaller#supports
-		// riconosce una classe come marshallabile anche senza @XmlRootElement solo se e'
-		// elencata esplicitamente qui, non per il solo fatto di stare nel context path.
-		marshaller.setClassesToBeBound(PaVerifyPaymentNoticeReq.class, PaVerifyPaymentNoticeRes.class,
-				PaGetPaymentReq.class, PaGetPaymentRes.class, PaGetPaymentV2Request.class,
-				PaGetPaymentV2Response.class);
-		// Jaxb2Marshaller#supports(Class) di default rifiuta una classe priva di
-		// @XmlRootElement PRIMA ancora di controllare classesToBeBound (vedi
-		// Jaxb2Marshaller#supportsInternal, verificato sul sorgente 7.0.10): e' questo,
-		// non la configurazione del Marshaller in se', la causa di "No adapter for
-		// endpoint" — classesToBeBound non basta se checkForXmlRootElement resta true.
-		marshaller.setCheckForXmlRootElement(false);
+		// Classi di paForNode.xsd generate in govpay-common-pendenze (xjc:simple, con
+		// @XmlRootElement): basta il package, l'ObjectFactory registra tutte le operazioni.
+		marshaller.setContextPath("it.gov.pagopa.pagopa_api.pa.pafornode");
 		return marshaller;
 	}
 

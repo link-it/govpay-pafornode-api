@@ -240,7 +240,7 @@
 			<artifactId>jackson-databind-nullable</artifactId>
 		</dependency>
 
-		<!-- Binding JAXB delle classi generate da paForNode.xsd -->
+		<!-- Binding JAXB delle classi di paForNode.xsd, generate in govpay-common-pendenze -->
 		<dependency>
 			<groupId>jakarta.xml.bind</groupId>
 			<artifactId>jakarta.xml.bind-api</artifactId>
@@ -366,25 +366,6 @@
 						</annotationProcessorPath>
 					</annotationProcessorPaths>
 				</configuration>
-			</plugin>
-
-			<!-- Classi JAXB dello schema pagoPA paForNode (versione plugin gestita dal BOM) -->
-			<plugin>
-				<groupId>org.codehaus.mojo</groupId>
-				<artifactId>jaxb2-maven-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>xjc-paForNode</id>
-						<goals>
-							<goal>xjc</goal>
-						</goals>
-						<configuration>
-							<sources>
-								<source>${project.basedir}/src/main/resources/xsd/paForNode.xsd</source>
-							</sources>
-						</configuration>
-					</execution>
-				</executions>
 			</plugin>
 
 			<!-- OpenAPI Generator Maven Plugin: stub server per orgs_payment_options.json

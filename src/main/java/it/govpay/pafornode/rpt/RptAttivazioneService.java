@@ -203,12 +203,7 @@ public class RptAttivazioneService {
 	public CtPaymentPA deserializzaDati(Rpt rpt) {
 		try {
 			Unmarshaller unmarshaller = jaxbContext.createUnmarshaller();
-			// Le classi generate da paForNode.xsd non hanno @XmlRootElement (il root e'
-			// dichiarato nello schema solo come <element>, non <complexType> con binding
-			// diretto, stesso motivo di Jaxb2Marshaller#setCheckForXmlRootElement in
-			// WsConfig): la forma a 1 argomento di unmarshal() non riconoscerebbe l'elemento
-			// come un root valido ("elementi previsti sono (none)"). Specificare la classe
-			// attesa fa risolvere l'elemento tramite l'@XmlElementDecl di ObjectFactory.
+			// Con la classe attesa l'unmarshal restituisce il tipo giusto senza cast.
 			JAXBElement<PaGetPaymentRes> risultato = unmarshaller
 					.unmarshal(new StreamSource(new ByteArrayInputStream(rpt.getXmlRpt())), PaGetPaymentRes.class);
 			return risultato.getValue().getData();

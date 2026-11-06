@@ -10,8 +10,8 @@ import it.gov.pagopa.pagopa_api.pa.pafornode.CtPaymentPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferListPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtTransferPA;
 import it.gov.pagopa.pagopa_api.pa.pafornode.StTransferType;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtMapEntry;
-import it.gov.pagopa.pagopa_api.xsd.common_types.v1_0.CtMetadata;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtMapEntry;
+import it.gov.pagopa.pagopa_api.pa.pafornode.CtMetadata;
 import it.govpay.common.entity.DominioEntity;
 import it.govpay.common.entity.IbanAccreditoEntity;
 import it.govpay.common.entity.TributoEntity;
@@ -57,7 +57,7 @@ public class CtPaymentPaBuilder {
 		CtPaymentPA ctPayment = new CtPaymentPA();
 		ctPayment.setCreditorReferenceId(pendenza.getIuv());
 		ctPayment.setPaymentAmount(importoTotaleConSend(pendenza));
-		ctPayment.setDueDate(XmlDateUtils.toXmlDate(DueDateCalculator.calcola(pendenza, numeroGiorniValiditaPendenza)));
+		ctPayment.setDueDate(DueDateCalculator.calcola(pendenza, numeroGiorniValiditaPendenza));
 		// Un'unica opzione di pagamento gestita: sempre l'ultima (e unica) rata.
 		ctPayment.setLastPayment(true);
 		ctPayment.setDescription(descrizione != null ? descrizione : " ");
@@ -105,7 +105,7 @@ public class CtPaymentPaBuilder {
 				transfer.setMetadata(metadataSpeseNotifica(pendenza.getSendImportoTotale()));
 			}
 
-			transferList.getTransfer().add(transfer);
+			transferList.getTransfers().add(transfer);
 			indice++;
 		}
 
@@ -134,7 +134,7 @@ public class CtPaymentPaBuilder {
 		CtMapEntry speseNotifica = new CtMapEntry();
 		speseNotifica.setKey(NOTIFICATION_FEE_METADATA_KEY);
 		speseNotifica.setValue(BigDecimal.valueOf(sendImportoTotale).movePointRight(2).toBigInteger().toString());
-		metadata.getMapEntry().add(speseNotifica);
+		metadata.getMapEntries().add(speseNotifica);
 		return metadata;
 	}
 }

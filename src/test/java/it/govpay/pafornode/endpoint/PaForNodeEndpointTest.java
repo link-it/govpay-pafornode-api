@@ -443,6 +443,34 @@ class PaForNodeEndpointTest {
 		assertThat(risposta.getBody()).contains("soap:address location=\"http://localhost:" + port + "/ws\"");
 	}
 
+	/** Come nel core: risposta applicativa KO con PAA_SYSTEM_ERROR, non un errore HTTP. */
+	@Test
+	void paDemandPaymentNoticeRispondeOperazioneNonDisponibile() {
+		String body = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+				                  xmlns:pafn="http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd">
+				  <soapenv:Body>
+				    <pafn:paDemandPaymentNoticeRequest>
+				      <idPA>%s</idPA>
+				      <idBrokerPA>%s</idBrokerPA>
+				      <idStation>%s</idStation>
+				      <idServizio>00001</idServizio>
+				      <idSoggettoServizio>00001</idSoggettoServizio>
+				      <datiSpecificiServizioRequest>PGE+PC9hPg==</datiSpecificiServizioRequest>
+				    </pafn:paDemandPaymentNoticeRequest>
+				  </soapenv:Body>
+				</soapenv:Envelope>
+				""".formatted(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE);
+
+		ResponseEntity<String> risposta = invia(body);
+
+		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(risposta.getBody()).contains("paDemandPaymentNoticeResponse", "<outcome>KO</outcome>",
+				"<faultCode>PAA_SYSTEM_ERROR</faultCode>", "<faultString>Errore generico.</faultString>",
+				"<id>" + COD_DOMINIO + "</id>", "<description>Operazione non disponibile.</description>");
+	}
+
 	@Test
 	void paVerifyPaymentNoticeRestituisceOkPerUnaPendenzaEsistente() {
 		IdentificativiPagamento identificativi = creaPendenza("doc-ok-1", 16.00);

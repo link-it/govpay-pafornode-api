@@ -26,7 +26,7 @@ Operazioni esposte (contratto in [src/main/resources/xsd/paForNode.wsdl](src/mai
 | `paSendRT` | `paSendRTReq` | Riceve la ricevuta di pagamento: registra l'esito della pendenza, oppure — se lo IUV non è noto a GovPay — salva solo la ricevuta, senza creare nessuna pendenza |
 | `paSendRTV2` | `paSendRTV2Request` | Come `paSendRT`, per le ricevute della versione 2 |
 
-L'operazione `paDemandPaymentNotice`, presente nel WSDL di pagoPA, **non è supportata**: la richiesta riceve HTTP 404.
+L'operazione `paDemandPaymentNotice`, presente nel WSDL di pagoPA, **non è supportata**: come nel core di GovPay risponde con `outcome` `KO` e fault `PAA_SYSTEM_ERROR`, descrizione "Operazione non disponibile.".
 
 Tutte le operazioni rispondono su un unico endpoint, `POST /ws` (più il canale interno `POST /internal/PagamentiTelematiciCCPservice`, vedi sotto): Spring Web Services sceglie l'operazione dall'elemento radice del body SOAP. Il WSDL è pubblico (nessuna autenticazione), con due convenzioni equivalenti — `GET /ws/paForNode.wsdl` (nome del bean) e `GET <path>?wsdl` sulla stessa URL del servizio, su entrambi i canali — con l'indirizzo del servizio (`soap:address`) riscritto su host e porta della richiesta. Gli errori applicativi non sono SOAP fault: la risposta ha `outcome` `KO` e un elemento `fault` con i codici `PAA_*` delle specifiche pagoPA. Le richieste che non sono messaggi SOAP ricevono un errore HTTP: 415 se il Content-Type non è `text/xml` o `application/soap+xml`, 400 se l'XML è malformato o non ha un `Envelope`, 405 per i metodi diversi da POST.
 

@@ -7,6 +7,8 @@ import org.springframework.ws.server.endpoint.annotation.RequestPayload;
 import org.springframework.ws.server.endpoint.annotation.ResponsePayload;
 
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtQrCode;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaDemandPaymentNoticeRequest;
+import it.gov.pagopa.pagopa_api.pa.pafornode.PaDemandPaymentNoticeResponse;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentReq;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentRes;
 import it.gov.pagopa.pagopa_api.pa.pafornode.PaGetPaymentV2Request;
@@ -38,11 +40,15 @@ import it.govpay.pafornode.rpt.PaGetPaymentV2ActivationService;
  * metodo (quindi dopo il try/catch), e un errore al commit scapperebbe alla costruzione
  * della risposta applicativa KO, arrivando al chiamante come HTTP 500/SOAP Fault grezzo
  * invece che come {@code PAA_SYSTEM_ERROR}.
+ *
+ * <p>{@code paDemandPaymentNotice} non e' supportata: risponde come il core (vedi {@link
+ * #paDemandPaymentNotice}).</p>
  */
 @Endpoint
 public class PaForNodeEndpoint {
 
 	private static final String NAMESPACE = "http://pagopa-api.pagopa.gov.it/pa/paForNode.xsd";
+	static final String OPERAZIONE_NON_DISPONIBILE = "Operazione non disponibile.";
 
 	private final PaVerifyPaymentNoticeService paVerifyPaymentNoticeService;
 	private final PaGetPaymentActivationService paGetPaymentActivationService;
@@ -247,6 +253,28 @@ public class PaForNodeEndpoint {
 	private static PaSendRTV2Response buildFaultSendRTV2(NdpException e) {
 		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
 		PaSendRTV2Response response = new PaSendRTV2Response();
+		response.setOutcome(StOutcome.KO);
+		CtFaultBean fault = new CtFaultBean();
+		fault.setId(e.getCodDominio());
+		fault.setFaultCode(e.getFault().name());
+		fault.setFaultString(e.getFault().getFaultString());
+		fault.setDescription(e.getDescrizione());
+		response.setFault(fault);
+		return response;
+	}
+
+	/**
+	 * Non supportata, come nel core: {@code PagamentiTelematiciCCPImpl#paDemandPaymentNotice}
+	 * risponde sempre {@code KO} con {@code PAA_SYSTEM_ERROR} e descrizione
+	 * "Operazione non disponibile.", con {@code idPA} come id del fault. Nessun controllo su
+	 * intermediario, stazione o dominio, anche questo come nel core.
+	 */
+	@PayloadRoot(namespace = NAMESPACE, localPart = "paDemandPaymentNoticeRequest")
+	@ResponsePayload
+	public PaDemandPaymentNoticeResponse paDemandPaymentNotice(@RequestPayload PaDemandPaymentNoticeRequest request) {
+		NdpException e = new NdpException(FaultPa.PAA_SYSTEM_ERROR, OPERAZIONE_NON_DISPONIBILE, request.getIdPA());
+		GdeFaultContext.segnalaFault(e.getFault().name(), e.getDescrizione());
+		PaDemandPaymentNoticeResponse response = new PaDemandPaymentNoticeResponse();
 		response.setOutcome(StOutcome.KO);
 		CtFaultBean fault = new CtFaultBean();
 		fault.setId(e.getCodDominio());

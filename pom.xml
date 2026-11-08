@@ -326,11 +326,6 @@
 	</dependencies>
 
 	<build>
-		<resources>
-			<resource>
-				<directory>src/main/resources</directory>
-			</resource>
-		</resources>
 		<finalName>govpay-pafornode-api</finalName>
 		<plugins>
 			<!-- L'esecuzione "repackage" (fat jar) e le esclusioni dei driver DB restano

@@ -95,6 +95,7 @@ Le proprietà si impostano in `application.properties`, da riga di comando (`-D<
 | `server.port` | `SERVER_PORT` | `10004` | Porta HTTP del servizio |
 | `server.error.whitelabel.enabled` | - | `true` | Pagina di errore di default di Spring Boot |
 | `spring.main.banner-mode` | - | `off` | Banner di Spring Boot all'avvio |
+| `springdoc.swagger-ui.version` | - | `@swagger-ui.version@` | Versione della Swagger UI, presa in build dal govpay-bom: springdoc la usa per il percorso del webjar. Da non cambiare |
 
 Per terminare il TLS nell'applicazione (metodo SSL) si usano le proprietà `server.ssl.*` di Spring Boot, con `server.ssl.client-auth=need` per richiedere il certificato client.
 

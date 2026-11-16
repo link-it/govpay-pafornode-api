@@ -1,5 +1,6 @@
 package it.govpay.pafornode.odp;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -43,7 +44,7 @@ import it.govpay.pafornode.odp.api.model.PaymentOptionsResponse;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.model.StatoOpzionePagamento;
 import it.govpay.pendenze.model.StatoPendenza;
 import it.govpay.pendenze.model.TipoSoggetto;
@@ -172,28 +173,28 @@ class PaymentOptionsControllerTest {
 		posizione.setDataCreazione(OffsetDateTime.now());
 		posizione.setDataUltimoAggiornamento(OffsetDateTime.now());
 
-		SoggettoDebitore soggetto = new SoggettoDebitore();
+		Debitore soggetto = new Debitore();
 		soggetto.setTipo(TipoSoggetto.F);
 		soggetto.setIdentificativo("RSSMRA80A01H501U");
 		soggetto.setAnagrafica("Mario Rossi");
-		posizione.addSoggettoDebitore(soggetto);
+		PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
 		IdentificativiPagamento idDisponibile = nuoviIdentificativi();
 		OpzionePagamento disponibile = nuovaOpzione(TipologiaOpzionePagamento.SOLUZIONE_UNICA,
 				StatoOpzionePagamento.DISPONIBILE);
-		posizione.addOpzionePagamento(disponibile);
+		PosizioniDiTest.aggiungiOpzione(posizione, disponibile);
 		disponibile.addPendenza(pendenza(idDisponibile, 100, StatoPendenza.NON_ESEGUITO));
 
 		IdentificativiPagamento idAttivata = nuoviIdentificativi();
 		OpzionePagamento attivata = nuovaOpzione(TipologiaOpzionePagamento.SOLUZIONE_UNICA,
 				StatoOpzionePagamento.ATTIVATA);
-		posizione.addOpzionePagamento(attivata);
+		PosizioniDiTest.aggiungiOpzione(posizione, attivata);
 		attivata.addPendenza(pendenza(idAttivata, 50, StatoPendenza.ESEGUITO));
 
 		IdentificativiPagamento idAnnullata = nuoviIdentificativi();
 		OpzionePagamento annullata = nuovaOpzione(TipologiaOpzionePagamento.SOLUZIONE_UNICA,
 				StatoOpzionePagamento.ANNULLATA);
-		posizione.addOpzionePagamento(annullata);
+		PosizioniDiTest.aggiungiOpzione(posizione, annullata);
 		annullata.addPendenza(pendenza(idAnnullata, 30, StatoPendenza.ANNULLATO));
 
 		// Transazione esplicita e committata: il controller legge via una richiesta HTTP
@@ -292,16 +293,16 @@ class PaymentOptionsControllerTest {
 		posizione.setDescrizione("Posizione con sola opzione annullata");
 		posizione.setDataCreazione(OffsetDateTime.now());
 		posizione.setDataUltimoAggiornamento(OffsetDateTime.now());
-		SoggettoDebitore soggetto = new SoggettoDebitore();
+		Debitore soggetto = new Debitore();
 		soggetto.setTipo(TipoSoggetto.F);
 		soggetto.setIdentificativo("RSSMRA80A01H501U");
 		soggetto.setAnagrafica("Mario Rossi");
-		posizione.addSoggettoDebitore(soggetto);
+		PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
 		IdentificativiPagamento idAnnullata = nuoviIdentificativi();
 		OpzionePagamento annullata = nuovaOpzione(TipologiaOpzionePagamento.SOLUZIONE_UNICA,
 				StatoOpzionePagamento.ANNULLATA);
-		posizione.addOpzionePagamento(annullata);
+		PosizioniDiTest.aggiungiOpzione(posizione, annullata);
 		annullata.addPendenza(pendenza(idAnnullata, 30, StatoPendenza.ANNULLATO));
 
 		new TransactionTemplate(transactionManager).executeWithoutResult(status -> {

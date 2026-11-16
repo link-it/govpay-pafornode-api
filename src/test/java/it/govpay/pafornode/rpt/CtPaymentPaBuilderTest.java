@@ -1,5 +1,6 @@
 package it.govpay.pafornode.rpt;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -19,9 +20,10 @@ import it.govpay.common.repository.IbanAccreditoRepository;
 import it.govpay.common.repository.TributoRepository;
 import it.govpay.common.repository.UnitaOperativaRepository;
 import it.govpay.pendenze.entity.OpzionePagamento;
+import it.govpay.pendenze.entity.PdDebitore;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.TipoSoggetto;
 
@@ -41,17 +43,29 @@ class CtPaymentPaBuilderTest {
 	}
 
 	private Pendenza pendenzaConUnaVoce(double importo, Long idTributo) {
+		return pendenzaConUnaVoce(importo, idTributo, false);
+	}
+
+	/** Con {@code conAltroDebitorePrima} la posizione ha un altro debitore, senza opzioni, prima di quello dell'avviso. */
+	private Pendenza pendenzaConUnaVoce(double importo, Long idTributo, boolean conAltroDebitorePrima) {
 		PosizioneDebitoria posizione = new PosizioneDebitoria();
 		posizione.setIdDominio(1L);
 		posizione.setDescrizione("Descrizione posizione");
-		SoggettoDebitore soggetto = new SoggettoDebitore();
+		if (conAltroDebitorePrima) {
+			Debitore altro = new Debitore();
+			altro.setTipo(TipoSoggetto.F);
+			altro.setIdentificativo("FRRGNN90C41H501Y");
+			altro.setAnagrafica("Giovanna Ferri");
+			PosizioniDiTest.aggiungiDebitore(posizione, altro);
+		}
+		Debitore soggetto = new Debitore();
 		soggetto.setTipo(TipoSoggetto.F);
 		soggetto.setIdentificativo("RSSMRA80A01H501U");
 		soggetto.setAnagrafica("Mario Rossi");
-		posizione.addSoggettoDebitore(soggetto);
+		PdDebitore pdDebitore = PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
 		OpzionePagamento opzione = new OpzionePagamento();
-		posizione.addOpzionePagamento(opzione);
+		pdDebitore.addOpzionePagamento(opzione);
 
 		Pendenza pendenza = new Pendenza();
 		pendenza.setIuv("01234567890123456789");
@@ -169,5 +183,16 @@ class CtPaymentPaBuilderTest {
 
 		org.assertj.core.api.Assertions.assertThatThrownBy(() -> builder.costruisci(pendenza, dominio(), null))
 				.isInstanceOf(IllegalStateException.class).hasMessageContaining("SEND");
+	}
+
+	@Test
+	void ilDebitoreDellaRptEQuelloDelNavNonIlPrimoDellaPosizione() {
+		Pendenza pendenza = pendenzaConUnaVoce(16.00, null, true);
+
+		CtPaymentPA ctPayment = builder.costruisci(pendenza, dominio(), null);
+
+		assertThat(ctPayment.getDebtor().getUniqueIdentifier().getEntityUniqueIdentifierValue())
+				.isEqualTo("RSSMRA80A01H501U");
+		assertThat(ctPayment.getDebtor().getFullName()).isEqualTo("Mario Rossi");
 	}
 }

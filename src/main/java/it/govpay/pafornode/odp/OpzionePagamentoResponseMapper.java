@@ -12,7 +12,7 @@ import it.govpay.pafornode.odp.api.model.Installment;
 import it.govpay.pafornode.odp.api.model.PaymentOption;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.Pendenza;
-import it.govpay.pendenze.entity.PosizioneDebitoria;
+import it.govpay.pendenze.entity.PdDebitore;
 import it.govpay.pendenze.model.StatoOpzionePagamento;
 import it.govpay.pendenze.model.StatoPendenza;
 import it.govpay.pendenze.service.CausaleVersamentoCodec;
@@ -48,10 +48,14 @@ final class OpzionePagamentoResponseMapper {
 	private OpzionePagamentoResponseMapper() {
 	}
 
-	/** Solo le opzioni {@code DISPONIBILE}/{@code ATTIVATA} della posizione, nell'ordine naturale. */
-	static List<PaymentOption> opzioniRestituibili(PosizioneDebitoria posizione, Clock clock) {
+	/**
+	 * Solo le opzioni {@code DISPONIBILE}/{@code ATTIVATA} del debitore a cui appartiene l'avviso,
+	 * nell'ordine naturale: le opzioni degli altri debitori della posizione hanno altri NAV e non
+	 * vanno proposte a chi paga questo.
+	 */
+	static List<PaymentOption> opzioniRestituibili(PdDebitore debitore, Clock clock) {
 		LocalDate oggi = LocalDate.now(clock);
-		return posizione.getOpzioniPagamento().stream()
+		return debitore.getOpzioniPagamento().stream()
 				.filter(opzione -> opzione.getStato() == StatoOpzionePagamento.DISPONIBILE
 						|| opzione.getStato() == StatoOpzionePagamento.ATTIVATA)
 				.map(opzione -> mappaOpzione(opzione, oggi, clock)).toList();

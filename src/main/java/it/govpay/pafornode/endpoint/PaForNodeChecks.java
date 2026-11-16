@@ -24,6 +24,7 @@ import it.govpay.pafornode.security.PaForNodePrincipalLoader;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.Pagamento;
 import it.govpay.pendenze.entity.Pendenza;
+import it.govpay.pendenze.entity.PosizioneDebitoria;
 import it.govpay.pendenze.model.StatoPendenza;
 import it.govpay.pendenze.repository.PagamentoRepository;
 
@@ -122,6 +123,19 @@ public final class PaForNodeChecks {
 					applicationCode);
 		} catch (IllegalArgumentException e) {
 			throw new NdpException(FaultPa.PAA_SYSTEM_ERROR, e.getMessage(), codDominio, e);
+		}
+	}
+
+	/**
+	 * Prima della data di pubblicazione della posizione l'avviso non esiste per pagoPA: la
+	 * risposta e' {@code PAA_PAGAMENTO_SCONOSCIUTO}, e il gestionale non viene interrogato, quindi
+	 * il controllo va fatto subito dopo aver individuato la pendenza e prima dell'attualizzazione.
+	 * La data e' un giorno, valido dalle 00:00 nel fuso del {@link Clock}.
+	 */
+	public static void verificaPubblicata(Pendenza pendenza, String codDominio, Clock clock) {
+		PosizioneDebitoria posizione = pendenza.getOpzionePagamento().getPosizioneDebitoria();
+		if (!posizione.isPubblicata(LocalDate.now(clock))) {
+			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO, codDominio);
 		}
 	}
 

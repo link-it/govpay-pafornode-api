@@ -110,6 +110,7 @@ public class PaGetPaymentV2ActivationService {
 		if (pendenzaEsistente.isPresent()) {
 			pendenza = pendenzaEsistente.get();
 			entityManager.refresh(pendenza, LockModeType.PESSIMISTIC_WRITE);
+			PaForNodeChecks.verificaPubblicata(pendenza, codDominio, clock);
 			attualizzazionePendenzaService.attualizza(pendenza, dominio, codDominio);
 		} else {
 			pendenza = acquisisciPendenzaAssente(dominio, iuv, numeroAvviso, codDominio);

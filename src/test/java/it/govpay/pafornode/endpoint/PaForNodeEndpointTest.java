@@ -1,5 +1,6 @@
 package it.govpay.pafornode.endpoint;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -56,7 +57,7 @@ import it.govpay.common.utils.IuvUtils;
 import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.TipoSoggetto;
 import it.govpay.pendenze.model.TipologiaOpzionePagamento;
@@ -195,6 +196,11 @@ class PaForNodeEndpointTest {
 	}
 
 	private IdentificativiPagamento creaPendenza(String codDocumento, double importo) {
+		return creaPendenza(codDocumento, importo, null);
+	}
+
+	private IdentificativiPagamento creaPendenza(String codDocumento, double importo,
+			java.time.LocalDate dataPubblicazione) {
 		IdentificativiPagamento identificativi = IuvUtils.genera(1, "", null, null,
 				System.nanoTime() % 1_000_000_000_000_00L);
 
@@ -203,16 +209,17 @@ class PaForNodeEndpointTest {
 		posizione.setCodDocumento(codDocumento);
 		posizione.setIdDominio(idDominio);
 		posizione.setDescrizione("Descrizione della posizione di test");
+		posizione.setDataPubblicazione(dataPubblicazione);
 
-		SoggettoDebitore soggetto = new SoggettoDebitore();
+		Debitore soggetto = new Debitore();
 		soggetto.setTipo(TipoSoggetto.F);
 		soggetto.setIdentificativo("RSSMRA80A01H501U");
 		soggetto.setAnagrafica("Mario Rossi");
-		posizione.addSoggettoDebitore(soggetto);
+		PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
 		OpzionePagamento opzione = new OpzionePagamento();
 		opzione.setTipologia(TipologiaOpzionePagamento.SOLUZIONE_UNICA);
-		posizione.addOpzionePagamento(opzione);
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
 
 		it.govpay.pendenze.entity.Pendenza pendenza = new it.govpay.pendenze.entity.Pendenza();
 		pendenza.setIdApplicazione(idApplicazione);
@@ -584,6 +591,19 @@ class PaForNodeEndpointTest {
 
 		assertThat(risposta.getStatusCode()).isEqualTo(HttpStatus.OK);
 		assertThat(risposta.getBody()).contains("<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
+	}
+
+	@Test
+	void primaDellaDataDiPubblicazioneLeTrePrimitiveRispondonoPagamentoSconosciuto() {
+		IdentificativiPagamento identificativi = creaPendenza("doc-nonpubblicato-1", 16.00,
+				java.time.LocalDate.now().plusDays(3));
+
+		assertThat(invia(envelope(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
+				identificativi.numeroAvviso())).getBody()).contains("<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
+		assertThat(invia(envelopeGetPayment(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
+				identificativi.numeroAvviso())).getBody()).contains("<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
+		assertThat(invia(envelopeGetPaymentV2(COD_DOMINIO, COD_INTERMEDIARIO, COD_STAZIONE, COD_DOMINIO,
+				identificativi.numeroAvviso())).getBody()).contains("<faultCode>PAA_PAGAMENTO_SCONOSCIUTO</faultCode>");
 	}
 
 	/**

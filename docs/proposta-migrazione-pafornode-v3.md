@@ -1640,6 +1640,47 @@ non del testo originale dell'issue.
    canali verificano esplicitamente il context path nel `soap:address`, non solo quello
    interno.
 
+## 3quinvicies. Issue #23: allineamento al modello per debitore e alla data di pubblicazione (2026-11-16)
+
+Allineamento a govpay-common-pendenze #26 (opzioni di pagamento per debitore, `pd_debitori`) e #30
+(notifica SEND per opzione di pagamento, data di pubblicazione). Il modello del debitore e della
+notifica SEND sostituisce quanto descritto nei punti precedenti su `soggettiDebitori` e sul
+"debitore principale".
+
+1. **Debitore dell'avviso.** Ogni NAV appartiene a un debitore: la RPT (`CtPaymentPaBuilder`,
+   `CtPaymentPaV2Builder`) e le notifiche della ricevuta (promemoria e App IO) usano il debitore
+   dell'opzione di pagamento della pendenza, non il primo della posizione. Con co-obbligati che
+   hanno NAV distinti, il primo debitore non e' quello che ha l'avviso in mano.
+
+2. **Opzioni restituite da `getPaymentOptions`.** Solo le opzioni `DISPONIBILE`/`ATTIVATA` del
+   debitore del NAV richiesto. Il contratto pagoPA lavora per NAV e non ha il concetto di debitore:
+   restituire anche le opzioni degli altri debitori farebbe proporre a chi paga NAV non suoi. La
+   mutua esclusione resta di posizione: se un debitore paga, le opzioni degli altri risultano
+   `ANNULLATA` e il filtro per stato le esclude gia'.
+
+3. **Acquisizione da Verifica.** La posizione creata ha un debitore con una sola opzione
+   `SOLUZIONE_UNICA`; senza notifica SEND e senza data di pubblicazione, perche' il contratto
+   `ec-client` non li porta.
+
+4. **NAV con cui si interroga SEND.** `sendNav` se valorizzato, altrimenti il numero avviso,
+   come nella 3.10.x. La notifica e' portata dalla sola prima pendenza dell'opzione, quindi
+   `isSendAbilitato()` e' vero solo su quella. Le spese di notifica non dipendono dalla validita'
+   della pendenza: SEND si interroga anche su una pendenza ancora valida (con il connettore SEND
+   del dominio configurato, e nel rispetto della retention), mentre la riacquisizione dal
+   gestionale resta legata alla validita' scaduta. Un errore di SEND e' un fault solo con
+   l'attualizzazione mandatoria, come nella 3.10.x.
+
+5. **Data di pubblicazione.** Prima della data (un giorno, valido dalle 00:00 nel fuso del
+   `Clock`) `paVerifyPaymentNotice`, `paGetPayment`, `paGetPaymentV2` e `getPaymentOptions`
+   rispondono `PAA_PAGAMENTO_SCONOSCIUTO`, come la 3.10.x. Il controllo e' subito dopo
+   l'individuazione della pendenza e prima dell'attualizzazione, perche' prima della pubblicazione
+   il gestionale non va interrogato. `paSendRT` non e' bloccata: riguarda un pagamento gia'
+   avvenuto.
+
+**Test**: fixture di test costruite con `PosizioniDiTest` (debitori della posizione e opzioni di
+ciascun debitore); schema di test riallineato a quello della libreria (`debitori`, `pd_debitori`,
+`versamenti.send_nav` e le colonne aggiunte dalla libreria dopo l'ultimo allineamento).
+
 ## 4. Punti aperti
 
 1. **Infrastruttura di autenticazione X.509 effettiva** (§3quater): in-app (truststore Java,

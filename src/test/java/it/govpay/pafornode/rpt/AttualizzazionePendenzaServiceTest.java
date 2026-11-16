@@ -102,13 +102,84 @@ class AttualizzazionePendenzaServiceTest {
 	}
 
 	@Test
-	void nonFaNullaSeLaValiditaNonEScaduta() {
-		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).plusDays(1), true, null);
+	void nonFaNullaSeLaValiditaNonEScadutaESendNonEPrevisto() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).plusDays(1), false, null);
 
 		service(Duration.ofHours(1), false).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
 
 		verifyNoInteractions(sendClient, verificaClient, applicazioneRepository);
 		assertThat(pendenza.getSendImportoTotale()).isNull();
+	}
+
+	@Test
+	void nonFaNullaSeLaValiditaNonEScadutaESendHaIlConnettoreAssente() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).plusDays(1), true, null);
+
+		service(Duration.ofHours(1), true).attualizza(pendenza, dominio(null), COD_DOMINIO);
+
+		verifyNoInteractions(sendClient, verificaClient, applicazioneRepository);
+	}
+
+	@Test
+	void interrogaSendSuUnaPendenzaAncoraValidaSenzaRiacquisireDalGestionale() {
+		for (OffsetDateTime dataValidita : new OffsetDateTime[] { null, OffsetDateTime.now(CLOCK),
+				OffsetDateTime.now(CLOCK).plusDays(1) }) {
+			Pendenza pendenza = pendenza(dataValidita, true, null);
+			applicazionePersistita("CONNETTORE-VERIFICA");
+			when(sendClient.recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, pendenza.getNumeroAvviso()))
+					.thenReturn(256L);
+
+			service(Duration.ofHours(1), false).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
+
+			verify(posizioneDebitoriaService, org.mockito.Mockito.atLeastOnce()).registraImportoSend("APP-TEST",
+					"pend-test", 2.56, OffsetDateTime.now(CLOCK));
+		}
+		verifyNoInteractions(verificaClient);
+	}
+
+	@Test
+	void suUnaPendenzaValidaAggiornaLeSpeseDopoLaRetentionESenzaRetentionNo() {
+		Pendenza entroRetention = pendenza(OffsetDateTime.now(CLOCK).plusDays(1), true,
+				OffsetDateTime.now(CLOCK).minusMinutes(10));
+		applicazionePersistita(null);
+
+		service(Duration.ofHours(1), false).attualizza(entroRetention, dominio("SEND_TEST"), COD_DOMINIO);
+		verify(sendClient, never()).recuperaImportoNotifica(any(), any(), any());
+
+		Pendenza dopoRetention = pendenza(OffsetDateTime.now(CLOCK).plusDays(1), true,
+				OffsetDateTime.now(CLOCK).minusHours(2));
+		when(sendClient.recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, dopoRetention.getNumeroAvviso()))
+				.thenReturn(256L);
+
+		service(Duration.ofHours(1), false).attualizza(dopoRetention, dominio("SEND_TEST"), COD_DOMINIO);
+		verify(sendClient).recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, dopoRetention.getNumeroAvviso());
+	}
+
+	@Test
+	void unErroreDiSendSuUnaPendenzaValidaEUnFaultSoloSeMandatoria() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).plusDays(1), true, null);
+		applicazionePersistita(null);
+		when(sendClient.recuperaImportoNotifica(any(), any(), any()))
+				.thenThrow(new org.springframework.web.client.RestClientException("SEND non raggiungibile"));
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
+
+		assertThatThrownBy(() -> service(Duration.ofHours(1), true).attualizza(pendenza, dominio("SEND_TEST"),
+				COD_DOMINIO)).isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
+	}
+
+	@Test
+	void interrogaSendConIlNavNotificatoSeIndicato() {
+		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).minusDays(1), true, null);
+		pendenza.setSendNav("302000100000099999");
+		applicazionePersistita(null);
+		when(sendClient.recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, "302000100000099999")).thenReturn(256L);
+
+		service(Duration.ofHours(1), false).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
+
+		verify(posizioneDebitoriaService).registraImportoSend("APP-TEST", "pend-test", 2.56, OffsetDateTime.now(CLOCK));
+		verify(sendClient, never()).recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, pendenza.getNumeroAvviso());
 	}
 
 	@Test
@@ -379,18 +450,19 @@ class AttualizzazionePendenzaServiceTest {
 
 	/**
 	 * {@code dataValidita} e' sempre scritta a mezzanotte dal mapper: una validita' odierna
-	 * non deve gia' innescare l'attualizzazione (resta valida fino a fine giornata, stesso
+	 * non deve gia' innescare la riacquisizione dal gestionale (resta valida fino a fine giornata, stesso
 	 * confronto per giorno di {@code PaForNodeChecksTest#procedeSeLavvisoScadeOggi}).
 	 */
 	@Test
-	void nonAttualizzaSeLaValiditaEOggi() {
+	void nonRiacquisisceDalGestionaleSeLaValiditaEOggi() {
 		Pendenza pendenza = pendenza(OffsetDateTime.now(CLOCK).toLocalDate().atStartOfDay(CLOCK.getZone())
 				.toOffsetDateTime(), true, null);
 		applicazionePersistita("VERIFICA_TEST");
 
 		service(Duration.ofHours(1), true).attualizza(pendenza, dominio("SEND_TEST"), COD_DOMINIO);
 
-		verifyNoInteractions(verificaClient, sendClient);
+		verifyNoInteractions(verificaClient);
+		verify(sendClient).recuperaImportoNotifica("SEND_TEST", COD_DOMINIO, pendenza.getNumeroAvviso());
 	}
 
 	@Test

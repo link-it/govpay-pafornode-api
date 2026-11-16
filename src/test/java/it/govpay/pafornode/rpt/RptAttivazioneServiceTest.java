@@ -1,5 +1,6 @@
 package it.govpay.pafornode.rpt;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.OffsetDateTime;
@@ -16,7 +17,7 @@ import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
 import it.govpay.pendenze.entity.Rpt;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.TipoSoggetto;
 import it.govpay.pendenze.model.TipologiaOpzionePagamento;
@@ -39,15 +40,15 @@ class RptAttivazioneServiceTest {
 		posizione.setIdDominio(1L);
 		posizione.setDescrizione("Descrizione della posizione di test");
 
-		SoggettoDebitore soggetto = new SoggettoDebitore();
+		Debitore soggetto = new Debitore();
 		soggetto.setTipo(TipoSoggetto.F);
 		soggetto.setIdentificativo("RSSMRA80A01H501U");
 		soggetto.setAnagrafica("Mario Rossi");
-		posizione.addSoggettoDebitore(soggetto);
+		PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
 		OpzionePagamento opzione = new OpzionePagamento();
 		opzione.setTipologia(TipologiaOpzionePagamento.SOLUZIONE_UNICA);
-		posizione.addOpzionePagamento(opzione);
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
 
 		Pendenza pendenza = new Pendenza();
 		pendenza.setIdApplicazione(1L);

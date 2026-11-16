@@ -13,10 +13,12 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.Pendenza;
+import it.govpay.pendenze.entity.PosizioneDebitoria;
 import it.govpay.pendenze.model.StatoPendenza;
 import it.govpay.pendenze.repository.PagamentoRepository;
 
@@ -108,5 +110,32 @@ class PaForNodeChecksTest {
 				() -> PaForNodeChecks.verificaStatoPagabile(pendenza, "12345678901", CLOCK, pagamentoRepository))
 				.isInstanceOf(NdpException.class)
 				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCADUTO);
+	}
+
+	private Pendenza pendenzaConPubblicazione(LocalDate dataPubblicazione) {
+		PosizioneDebitoria posizione = new PosizioneDebitoria();
+		posizione.setDataPubblicazione(dataPubblicazione);
+		OpzionePagamento opzione = new OpzionePagamento();
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
+		Pendenza pendenza = new Pendenza();
+		pendenza.setStato(StatoPendenza.NON_ESEGUITO);
+		opzione.addPendenza(pendenza);
+		return pendenza;
+	}
+
+	@Test
+	void rifiutaPrimaDellaDataDiPubblicazione() {
+		Pendenza pendenza = pendenzaConPubblicazione(LocalDate.of(2026, 6, 16));
+
+		assertThatThrownBy(() -> PaForNodeChecks.verificaPubblicata(pendenza, "12345678901", CLOCK))
+				.isInstanceOf(NdpException.class)
+				.extracting(e -> ((NdpException) e).getFault()).isEqualTo(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO);
+	}
+
+	@Test
+	void accettaDalGiornoDellaDataDiPubblicazioneOSenzaData() {
+		PaForNodeChecks.verificaPubblicata(pendenzaConPubblicazione(LocalDate.of(2026, 6, 15)), "12345678901", CLOCK);
+		PaForNodeChecks.verificaPubblicata(pendenzaConPubblicazione(LocalDate.of(2026, 1, 1)), "12345678901", CLOCK);
+		PaForNodeChecks.verificaPubblicata(pendenzaConPubblicazione(null), "12345678901", CLOCK);
 	}
 }

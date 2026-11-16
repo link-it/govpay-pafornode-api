@@ -125,6 +125,7 @@ public class PaVerifyPaymentNoticeService {
 		Pendenza pendenza;
 		if (pendenzaEsistente.isPresent()) {
 			pendenza = pendenzaEsistente.get();
+			PaForNodeChecks.verificaPubblicata(pendenza, codDominio, clock);
 			attualizzazionePendenzaService.attualizza(pendenza, dominio, codDominio);
 		} else {
 			pendenza = acquisisciPendenzaAssente(dominio, iuv, numeroAvviso, codDominio);

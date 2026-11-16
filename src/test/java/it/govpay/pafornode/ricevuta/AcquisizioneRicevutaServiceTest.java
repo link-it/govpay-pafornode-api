@@ -1,5 +1,6 @@
 package it.govpay.pafornode.ricevuta;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -40,7 +41,7 @@ import it.govpay.pendenze.entity.PosizioneDebitoria;
 import it.govpay.pendenze.entity.Rendicontazione;
 import it.govpay.pendenze.entity.Notifica;
 import it.govpay.pendenze.entity.Rpt;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.StatoFlussoRendicontazione;
 import it.govpay.pendenze.model.StatoOpzionePagamento;
@@ -179,25 +180,23 @@ class AcquisizioneRicevutaServiceTest {
         posizione.setCodDocumento("pos-alternative");
         posizione.setIdDominio(idDominio);
         posizione.setDescrizione("test");
-        posizione.setNotificaSend(false);
         posizione.setDataCreazione(ADESSO);
         posizione.setDataUltimoAggiornamento(ADESSO);
 
-        SoggettoDebitore soggetto = new SoggettoDebitore();
-        soggetto.setOrdine(0);
+        Debitore soggetto = new Debitore();
         soggetto.setTipo(TipoSoggetto.F);
         soggetto.setIdentificativo("RSSMRA80A01H501U");
         soggetto.setEmail("debitore@test.it");
-        posizione.addSoggettoDebitore(soggetto);
+        PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
         OpzionePagamento opzionePagata = nuovaOpzioneDisponibile();
-        posizione.addOpzionePagamento(opzionePagata);
+        PosizioniDiTest.aggiungiOpzione(posizione, opzionePagata);
         Pendenza pendenza = nuovaPendenza(applicazione.getId(), idDominio, idTipoVersamentoDominio, "100000000000000005");
         opzionePagata.addPendenza(pendenza);
         pendenza.addVocePendenza(nuovaVoce("100000000000000005"));
 
         OpzionePagamento alternativa = nuovaOpzioneDisponibile();
-        posizione.addOpzionePagamento(alternativa);
+        PosizioniDiTest.aggiungiOpzione(posizione, alternativa);
         Pendenza pendenzaAlternativa = nuovaPendenza(applicazione.getId(), idDominio, idTipoVersamentoDominio,
                 "100000000000000006");
         alternativa.addPendenza(pendenzaAlternativa);
@@ -359,17 +358,15 @@ class AcquisizioneRicevutaServiceTest {
         posizione.setCodDocumento("pos-" + iuv);
         posizione.setIdDominio(idDominio);
         posizione.setDescrizione("test");
-        posizione.setNotificaSend(false);
         posizione.setDataCreazione(ADESSO);
         posizione.setDataUltimoAggiornamento(ADESSO);
-        SoggettoDebitore soggetto = new SoggettoDebitore();
-        soggetto.setOrdine(0);
+        Debitore soggetto = new Debitore();
         soggetto.setTipo(TipoSoggetto.F);
         soggetto.setIdentificativo("RSSMRA80A01H501U");
         soggetto.setEmail("debitore@test.it");
-        posizione.addSoggettoDebitore(soggetto);
+        PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
         OpzionePagamento opzione = nuovaOpzioneDisponibile();
-        posizione.addOpzionePagamento(opzione);
+        PosizioniDiTest.aggiungiOpzione(posizione, opzione);
         Pendenza pendenza = nuovaPendenza(applicazione.getId(), idDominio, idTipoVersamentoDominio, iuv);
         pendenza.setImporto(10.00);
         opzione.addPendenza(pendenza);
@@ -880,19 +877,17 @@ class AcquisizioneRicevutaServiceTest {
         posizione.setCodDocumento("pos-" + iuv);
         posizione.setIdDominio(idDominio);
         posizione.setDescrizione("test");
-        posizione.setNotificaSend(false);
         posizione.setDataCreazione(ADESSO);
         posizione.setDataUltimoAggiornamento(ADESSO);
 
-        SoggettoDebitore soggetto = new SoggettoDebitore();
-        soggetto.setOrdine(0);
+        Debitore soggetto = new Debitore();
         soggetto.setTipo(TipoSoggetto.F);
         soggetto.setIdentificativo("RSSMRA80A01H501U");
         soggetto.setEmail("debitore@test.it");
-        posizione.addSoggettoDebitore(soggetto);
+        PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
         OpzionePagamento opzione = nuovaOpzioneDisponibile();
-        posizione.addOpzionePagamento(opzione);
+        PosizioniDiTest.aggiungiOpzione(posizione, opzione);
 
         Pendenza pendenza = nuovaPendenza(idApplicazione, idDominio, idTipoVersamentoDominio, iuv);
         opzione.addPendenza(pendenza);

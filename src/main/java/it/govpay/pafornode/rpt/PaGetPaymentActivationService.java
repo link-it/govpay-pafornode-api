@@ -120,6 +120,7 @@ public class PaGetPaymentActivationService {
 			// frattempo. Un semplice lock non aggiorna lo stato gia' nel persistence
 			// context. Il lock rimane acquisito fino al commit di questa transazione.
 			entityManager.refresh(pendenza, LockModeType.PESSIMISTIC_WRITE);
+			PaForNodeChecks.verificaPubblicata(pendenza, codDominio, clock);
 			attualizzazionePendenzaService.attualizza(pendenza, dominio, codDominio);
 		} else {
 			// Pendenza del tutto assente: nessun lock da (ri)acquisire, nessuna

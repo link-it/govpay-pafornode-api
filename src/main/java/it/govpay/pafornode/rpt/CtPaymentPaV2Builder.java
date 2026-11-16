@@ -2,7 +2,6 @@ package it.govpay.pafornode.rpt;
 
 import java.math.BigDecimal;
 import java.util.Base64;
-import java.util.Comparator;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -23,7 +22,7 @@ import it.govpay.common.repository.TributoRepository;
 import it.govpay.common.repository.UnitaOperativaRepository;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.DettaglioContabile;
 import it.govpay.pendenze.service.CausaleVersamentoCodec;
@@ -97,7 +96,7 @@ public class CtPaymentPaV2Builder {
 		ctPayment.setDescription(descrizione != null ? descrizione : " ");
 		ctPayment.setCompanyName(dominio.getRagioneSociale());
 		ctPayment.setOfficeName(UnitaOperativaResolver.risolviNome(unitaOperativaRepository, posizione));
-		ctPayment.setDebtor(DebitoreBuilder.costruisci(debitorePrincipale(posizione)));
+		ctPayment.setDebtor(DebitoreBuilder.costruisci(debitoreDi(pendenza)));
 
 		CtTransferListPAV2 transferList = new CtTransferListPAV2();
 		ctPayment.setTransferList(transferList);
@@ -170,9 +169,9 @@ public class CtPaymentPaV2Builder {
 		return marcaBollo;
 	}
 
-	private static SoggettoDebitore debitorePrincipale(PosizioneDebitoria posizione) {
-		return posizione.getSoggettiDebitori().stream().min(Comparator.comparingInt(SoggettoDebitore::getOrdine))
-				.orElseThrow(() -> new IllegalStateException("Posizione debitoria senza soggetti debitori."));
+	/** Il debitore a cui appartiene l'avviso: quello dell'opzione di pagamento della pendenza. */
+	private static Debitore debitoreDi(Pendenza pendenza) {
+		return pendenza.getOpzionePagamento().getPdDebitore().getDebitore();
 	}
 
 	private static BigDecimal importoTotaleConSend(Pendenza pendenza) {

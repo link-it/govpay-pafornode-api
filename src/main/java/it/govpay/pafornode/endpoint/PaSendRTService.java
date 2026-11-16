@@ -108,10 +108,9 @@ import it.govpay.pafornode.ricevuta.DatiRicevutaPagamento.DatiTrasferimentoRicev
  * (presente solo nel percorso V2-V2 puro, {@link #validaSemanticaV2}).</p>
  *
  * <p>Il multi-debitore di v3 non ha impatto su questa validazione: {@code
- * CtPaymentPaBuilder}/{@code CtPaymentPaV2Builder} risolvono gia' un solo "debitore
- * principale" al momento dell'ATTIVAZIONE della RPT, congelato nell'XML che questo
- * servizio rilegge — nessuna rilettura dinamica di {@code PosizioneDebitoria
- * #getSoggettiDebitori()} qui.</p>
+ * CtPaymentPaBuilder}/{@code CtPaymentPaV2Builder} risolvono il debitore dell'avviso al
+ * momento dell'ATTIVAZIONE della RPT, congelato nell'XML che questo servizio rilegge —
+ * nessuna rilettura dei debitori della posizione qui.</p>
  */
 @Service
 public class PaSendRTService {

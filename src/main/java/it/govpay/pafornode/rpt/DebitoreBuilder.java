@@ -3,15 +3,15 @@ package it.govpay.pafornode.rpt;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtEntityUniqueIdentifier;
 import it.gov.pagopa.pagopa_api.pa.pafornode.CtSubject;
 import it.gov.pagopa.pagopa_api.pa.pafornode.StEntityUniqueIdentifierType;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 
-/** {@code CtSubject} del debitore principale, condiviso tra le operazioni paForNode che attivano una RPT. */
+/** {@code CtSubject} del debitore a cui appartiene l'avviso, condiviso tra le operazioni paForNode che attivano una RPT. */
 public final class DebitoreBuilder {
 
 	private DebitoreBuilder() {
 	}
 
-	public static CtSubject costruisci(SoggettoDebitore debitore) {
+	public static CtSubject costruisci(Debitore debitore) {
 		CtEntityUniqueIdentifier identificativo = new CtEntityUniqueIdentifier();
 		String codiceIdentificativo = debitore.getIdentificativo();
 		identificativo.setEntityUniqueIdentifierValue(codiceIdentificativo);

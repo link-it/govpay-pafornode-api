@@ -85,7 +85,7 @@ class PendenzaVerificataMapperTest {
 	}
 
 	private DatiVocePendenza unicaVoce(DatiPosizioneDebitoria comando) {
-		return comando.opzioniPagamento().get(0).pendenze().get(0).voci().get(0);
+		return comando.debitori().get(0).opzioniPagamento().get(0).pendenze().get(0).voci().get(0);
 	}
 
 	@Test
@@ -167,7 +167,7 @@ class PendenzaVerificataMapperTest {
 		DatiPosizioneDebitoria comando = mapper.creaDatiPosizioneDebitoria(dto, 1L, ID_DOMINIO,
 				NUMERO_AVVISO_RICHIESTO);
 
-		DatiPendenza datiPendenza = comando.opzioniPagamento().get(0).pendenze().get(0);
+		DatiPendenza datiPendenza = comando.debitori().get(0).opzioniPagamento().get(0).pendenze().get(0);
 		assertThat(datiPendenza.numeroAvviso()).isEqualTo(NUMERO_AVVISO_RICHIESTO);
 	}
 

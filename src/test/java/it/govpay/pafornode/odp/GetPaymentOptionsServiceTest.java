@@ -1,5 +1,6 @@
 package it.govpay.pafornode.odp;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -25,11 +26,14 @@ import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
 import it.govpay.pafornode.odp.api.model.EnumPo;
 import it.govpay.pafornode.odp.api.model.PaymentOptionsResponse;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.OpzionePagamento;
+import it.govpay.pendenze.entity.PdDebitore;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
 import it.govpay.pendenze.model.StatoOpzionePagamento;
 import it.govpay.pendenze.model.StatoPendenza;
+import it.govpay.pendenze.model.TipoSoggetto;
 import it.govpay.pendenze.repository.PagamentoRepository;
 import it.govpay.pendenze.repository.PendenzaRepository;
 
@@ -143,7 +147,7 @@ class GetPaymentOptionsServiceTest {
 		PosizioneDebitoria posizione = new PosizioneDebitoria();
 		OpzionePagamento opzione = new OpzionePagamento();
 		opzione.setStato(StatoOpzionePagamento.ANNULLATA);
-		posizione.addOpzionePagamento(opzione);
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
 		Pendenza pendenza = pendenza(StatoPendenza.ANNULLATO, 100);
 		opzione.addPendenza(pendenza);
 		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
@@ -168,18 +172,18 @@ class GetPaymentOptionsServiceTest {
 
 		OpzionePagamento disponibile = new OpzionePagamento();
 		disponibile.setStato(StatoOpzionePagamento.DISPONIBILE);
-		posizione.addOpzionePagamento(disponibile);
+		PosizioniDiTest.aggiungiOpzione(posizione, disponibile);
 		Pendenza pendenzaRichiesta = pendenza(StatoPendenza.NON_ESEGUITO, 100);
 		disponibile.addPendenza(pendenzaRichiesta);
 
 		OpzionePagamento attivata = new OpzionePagamento();
 		attivata.setStato(StatoOpzionePagamento.ATTIVATA);
-		posizione.addOpzionePagamento(attivata);
+		PosizioniDiTest.aggiungiOpzione(posizione, attivata);
 		attivata.addPendenza(pendenza(StatoPendenza.ESEGUITO, 50));
 
 		OpzionePagamento annullata = new OpzionePagamento();
 		annullata.setStato(StatoOpzionePagamento.ANNULLATA);
-		posizione.addOpzionePagamento(annullata);
+		PosizioniDiTest.aggiungiOpzione(posizione, annullata);
 		annullata.addPendenza(pendenza(StatoPendenza.ANNULLATO, 30));
 
 		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenzaRichiesta));
@@ -190,5 +194,64 @@ class GetPaymentOptionsServiceTest {
 		assertThat(response.getPaymentOptions()).hasSize(2);
 		assertThat(response.getPaymentOptions()).extracting(po -> po.getStatus())
 				.containsExactly(EnumPo.PO_UNPAID, EnumPo.PO_PAID);
+	}
+
+	/**
+	 * Posizione con due debitori, ciascuno con la propria opzione e il proprio NAV: la risposta
+	 * contiene solo l'opzione del debitore a cui appartiene il NAV richiesto.
+	 */
+	@Test
+	void restituisceSoloLeOpzioniDelDebitoreDelNavRichiesto() {
+		when(dominioRepository.findByCodDominio(COD_DOMINIO)).thenReturn(Optional.of(dominioConStazioneEIntermediario()));
+		autenticaCome(PRINCIPAL_REGISTRATO);
+
+		PosizioneDebitoria posizione = new PosizioneDebitoria();
+		posizione.setDescrizione("Posizione con due debitori");
+		PdDebitore primo = PosizioniDiTest.aggiungiDebitore(posizione, debitore("RSSMRA80A01H501U"));
+		PdDebitore secondo = PosizioniDiTest.aggiungiDebitore(posizione, debitore("FRRGNN90C41H501Y"));
+
+		OpzionePagamento opzionePrimo = new OpzionePagamento();
+		opzionePrimo.setStato(StatoOpzionePagamento.DISPONIBILE);
+		primo.addOpzionePagamento(opzionePrimo);
+		Pendenza pendenzaRichiesta = pendenza(StatoPendenza.NON_ESEGUITO, 100);
+		opzionePrimo.addPendenza(pendenzaRichiesta);
+
+		OpzionePagamento opzioneSecondo = new OpzionePagamento();
+		opzioneSecondo.setStato(StatoOpzionePagamento.DISPONIBILE);
+		secondo.addOpzionePagamento(opzioneSecondo);
+		opzioneSecondo.addPendenza(pendenza(StatoPendenza.NON_ESEGUITO, 40));
+
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenzaRichiesta));
+
+		PaymentOptionsResponse response = service.eseguiGetPaymentOptions(COD_DOMINIO, NUMERO_AVVISO);
+
+		assertThat(response.getPaymentOptions()).hasSize(1);
+		assertThat(response.getPaymentOptions().get(0).getAmount()).isEqualTo(10000L);
+	}
+
+	private static Debitore debitore(String identificativo) {
+		Debitore debitore = new Debitore();
+		debitore.setTipo(TipoSoggetto.F);
+		debitore.setIdentificativo(identificativo);
+		debitore.setAnagrafica("Debitore " + identificativo);
+		return debitore;
+	}
+
+	@Test
+	void rifiutaSeLaPosizioneNonEAncoraPubblicata() {
+		when(dominioRepository.findByCodDominio(COD_DOMINIO)).thenReturn(Optional.of(dominioConStazioneEIntermediario()));
+		autenticaCome(PRINCIPAL_REGISTRATO);
+		PosizioneDebitoria posizione = new PosizioneDebitoria();
+		posizione.setDataPubblicazione(java.time.LocalDate.now().plusDays(3));
+		OpzionePagamento opzione = new OpzionePagamento();
+		opzione.setStato(StatoOpzionePagamento.DISPONIBILE);
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
+		Pendenza pendenza = pendenza(StatoPendenza.NON_ESEGUITO, 100);
+		opzione.addPendenza(pendenza);
+		when(pendenzaRepository.findByIdDominioAndIuv(any(), any())).thenReturn(Optional.of(pendenza));
+
+		assertThatThrownBy(() -> service.eseguiGetPaymentOptions(COD_DOMINIO, NUMERO_AVVISO))
+				.isInstanceOf(NdpException.class).extracting(e -> ((NdpException) e).getFault())
+				.isEqualTo(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO);
 	}
 }

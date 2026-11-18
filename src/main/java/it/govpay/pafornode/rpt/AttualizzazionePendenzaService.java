@@ -94,13 +94,24 @@ public class AttualizzazionePendenzaService {
 		}
 		// Stesso confronto per giorno di PaForNodeChecks#verificaStatoPagabile: dataValidita'
 		// e' sempre scritta a mezzanotte dal mapper, un giorno puro — la validita' odierna
-		// non deve gia' innescare l'attualizzazione (resta valida fino a fine giornata).
-		if (pendenza.getDataValidita() == null || !pendenza.getDataValidita().toLocalDate().isBefore(oggi)) {
+		// non deve gia' innescare la riacquisizione dal gestionale (resta valida fino a fine giornata).
+		boolean validitaScaduta = pendenza.getDataValidita() != null
+				&& pendenza.getDataValidita().toLocalDate().isBefore(oggi);
+		// Le spese di notifica SEND non dipendono dalla validita': vanno interrogate anche su una
+		// pendenza ancora valida, ma solo con il connettore SEND configurato (senza, resta pagabile
+		// com'e', perche' la mandatorieta' riguarda la pendenza non piu' valida).
+		boolean sendPrevisto = pendenza.isSendAbilitato() && dominio.getCodConnettoreSend() != null;
+		if (!validitaScaduta && !sendPrevisto) {
 			return;
 		}
 		ApplicazioneEntity applicazione = applicazioneRepository.findById(pendenza.getIdApplicazione())
 				.orElseThrow(() -> new IllegalStateException(
 						"Applicazione [" + pendenza.getIdApplicazione() + "] della pendenza non trovata."));
+
+		if (!validitaScaduta) {
+			aggiornaSend(pendenza, applicazione, dominio, codDominio);
+			return;
+		}
 
 		boolean attualizzata = false;
 		String codConnettoreVerifica = applicazione.getCodConnettoreIntegrazione();
@@ -117,15 +128,8 @@ public class AttualizzazionePendenzaService {
 				throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, codDominio);
 			}
 		}
-		if (pendenza.isSendAbilitato() && dominio.getCodConnettoreSend() != null) {
-			try {
-				attualizzaSend(pendenza, applicazione, dominio, OffsetDateTime.now(clock));
-				attualizzata = true;
-			} catch (RestClientException e) {
-				if (attualizzazioneMandatoria) {
-					throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, e.getMessage(), codDominio, e);
-				}
-			}
+		if (sendPrevisto) {
+			attualizzata = aggiornaSend(pendenza, applicazione, dominio, codDominio);
 		}
 		if (!attualizzata && attualizzazioneMandatoria) {
 			throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, codDominio);
@@ -182,14 +186,35 @@ public class AttualizzazionePendenzaService {
 		return true;
 	}
 
+	/**
+	 * Interroga SEND per le spese di notifica. Un errore di SEND e' un fault solo se
+	 * l'attualizzazione e' mandatoria, altrimenti si prosegue con l'importo gia' noto.
+	 *
+	 * @return {@code true} se le spese sono state acquisite o sono ancora entro la retention
+	 */
+	private boolean aggiornaSend(Pendenza pendenza, ApplicazioneEntity applicazione, DominioEntity dominio,
+			String codDominio) {
+		try {
+			attualizzaSend(pendenza, applicazione, dominio, OffsetDateTime.now(clock));
+			return true;
+		} catch (RestClientException e) {
+			if (attualizzazioneMandatoria) {
+				throw new NdpException(FaultPa.PAA_PAGAMENTO_SCADUTO, e.getMessage(), codDominio, e);
+			}
+			return false;
+		}
+	}
+
 	private void attualizzaSend(Pendenza pendenza, ApplicazioneEntity applicazione, DominioEntity dominio,
 			OffsetDateTime oggi) {
 		OffsetDateTime ultimoAggiornamento = pendenza.getSendDataAggiornamento();
 		if (ultimoAggiornamento != null && ultimoAggiornamento.plus(retentionSend).isAfter(oggi)) {
 			return;
 		}
+		// il NAV con cui si interroga SEND e' quello notificato, se indicato, altrimenti il numero avviso
+		String noticeCode = pendenza.getSendNav() != null ? pendenza.getSendNav() : pendenza.getNumeroAvviso();
 		long centesimi = sendClient.recuperaImportoNotifica(dominio.getCodConnettoreSend(), dominio.getCodDominio(),
-				pendenza.getNumeroAvviso());
+				noticeCode);
 		double euro = centesimi / 100.0;
 		posizioneDebitoriaService.registraImportoSend(applicazione.getCodApplicazione(), pendenza.getIdPendenza(),
 				euro, oggi);

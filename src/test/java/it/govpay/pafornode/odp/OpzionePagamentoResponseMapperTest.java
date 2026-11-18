@@ -1,5 +1,6 @@
 package it.govpay.pafornode.odp;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Clock;
@@ -37,7 +38,7 @@ class OpzionePagamentoResponseMapperTest {
 		OpzionePagamento opzione = new OpzionePagamento();
 		opzione.setStato(statoOpzione);
 		opzione.setDataScadenza(dataScadenzaOpzione);
-		posizione.addOpzionePagamento(opzione);
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
 		for (Pendenza pendenza : pendenze) {
 			opzione.addPendenza(pendenza);
 		}
@@ -59,7 +60,7 @@ class OpzionePagamentoResponseMapperTest {
 		PosizioneDebitoria posizione = posizioneConUnaOpzione(StatoOpzionePagamento.ANNULLATA, null,
 				pendenza(StatoPendenza.ANNULLATO, null, 10));
 
-		assertThat(OpzionePagamentoResponseMapper.opzioniRestituibili(posizione, CLOCK)).isEmpty();
+		assertThat(OpzionePagamentoResponseMapper.opzioniRestituibili(posizione.getPdDebitori().get(0), CLOCK)).isEmpty();
 	}
 
 	@Test
@@ -129,7 +130,7 @@ class OpzionePagamentoResponseMapperTest {
 	}
 
 	private PaymentOption unicaOpzione(PosizioneDebitoria posizione) {
-		List<PaymentOption> opzioni = OpzionePagamentoResponseMapper.opzioniRestituibili(posizione, CLOCK);
+		List<PaymentOption> opzioni = OpzionePagamentoResponseMapper.opzioniRestituibili(posizione.getPdDebitori().get(0), CLOCK);
 		assertThat(opzioni).hasSize(1);
 		return opzioni.get(0);
 	}

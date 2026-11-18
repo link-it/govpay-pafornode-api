@@ -86,7 +86,8 @@ CREATE SEQUENCE IF NOT EXISTS seq_documenti start 1 increment 1 maxvalue 9223372
 CREATE SEQUENCE IF NOT EXISTS seq_versamenti start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
 CREATE SEQUENCE IF NOT EXISTS seq_singoli_versamenti start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
 CREATE SEQUENCE IF NOT EXISTS seq_opzioni_pagamento start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
-CREATE SEQUENCE IF NOT EXISTS seq_soggetti_debitori start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
+CREATE SEQUENCE IF NOT EXISTS seq_debitori start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
+CREATE SEQUENCE IF NOT EXISTS seq_pd_debitori start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
 CREATE SEQUENCE IF NOT EXISTS seq_tipi_versamento start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
 CREATE SEQUENCE IF NOT EXISTS seq_tipi_vers_domini start 1 increment 1 maxvalue 9223372036854775807 minvalue 1 cache 1 NO CYCLE;
 
@@ -310,8 +311,6 @@ CREATE TABLE IF NOT EXISTS documenti
 	descrizione VARCHAR(1024) NOT NULL,
 	-- aggiunte additive per PosizioneDebitoria (assenti nel legacy)
 	data_pubblicazione DATE,
-	notifica_send BOOLEAN NOT NULL,
-	nav_notifica VARCHAR(18),
 	data_ultima_modifica_aca TIMESTAMP,
 	data_ultima_comunicazione_aca TIMESTAMP,
 	data_creazione TIMESTAMP NOT NULL,
@@ -334,6 +333,40 @@ CREATE TABLE IF NOT EXISTS documenti
 	CONSTRAINT pk_documenti PRIMARY KEY (id)
 );
 
+CREATE TABLE IF NOT EXISTS debitori
+(
+	tipo VARCHAR(1) NOT NULL,
+	identificativo VARCHAR(35) NOT NULL,
+	anagrafica VARCHAR(70),
+	indirizzo VARCHAR(70),
+	civico VARCHAR(16),
+	cap VARCHAR(16),
+	localita VARCHAR(35),
+	provincia VARCHAR(35),
+	nazione VARCHAR(2),
+	email VARCHAR(256),
+	cellulare VARCHAR(35),
+	-- fk/pk columns
+	id BIGINT DEFAULT nextval('seq_debitori') NOT NULL,
+	CONSTRAINT pk_debitori PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS pd_debitori
+(
+	posizione INT NOT NULL,
+	data_rimozione TIMESTAMP,
+	-- fk/pk columns
+	id BIGINT DEFAULT nextval('seq_pd_debitori') NOT NULL,
+	id_documento BIGINT NOT NULL,
+	id_debitore BIGINT NOT NULL,
+	-- unique constraints
+	CONSTRAINT unique_pd_debitori_1 UNIQUE (id_documento, id_debitore),
+	-- fk/pk keys constraints
+	CONSTRAINT fk_pdd_id_documento FOREIGN KEY (id_documento) REFERENCES documenti(id),
+	CONSTRAINT fk_pdd_id_debitore FOREIGN KEY (id_debitore) REFERENCES debitori(id),
+	CONSTRAINT pk_pd_debitori PRIMARY KEY (id)
+);
+
 CREATE TABLE IF NOT EXISTS opzioni_pagamento
 (
 	id_opzione_pagamento UUID NOT NULL,
@@ -347,43 +380,25 @@ CREATE TABLE IF NOT EXISTS opzioni_pagamento
 	data_ultimo_aggiornamento TIMESTAMP NOT NULL,
 	-- fk/pk columns
 	id BIGINT DEFAULT nextval('seq_opzioni_pagamento') NOT NULL,
-	id_documento BIGINT NOT NULL,
+	id_pd_debitore BIGINT NOT NULL,
 	-- unique constraints
 	CONSTRAINT unique_opzioni_pagamento_id_opzione UNIQUE (id_opzione_pagamento),
 	-- fk/pk keys constraints
-	CONSTRAINT fk_opz_id_documento FOREIGN KEY (id_documento) REFERENCES documenti(id),
+	CONSTRAINT fk_opz_id_pd_debitore FOREIGN KEY (id_pd_debitore) REFERENCES pd_debitori(id),
 	CONSTRAINT pk_opzioni_pagamento PRIMARY KEY (id)
 );
 
--- Tutti i debitori della posizione, incluso il primo (ordine 0) — unica fonte
--- di verita' per v3. Vedi nota di testata sulla sincronizzazione verso
--- versamenti.debitore_*.
-CREATE TABLE IF NOT EXISTS soggetti_debitori
-(
-	ordine INT NOT NULL,
-	tipo VARCHAR(1) NOT NULL,
-	identificativo VARCHAR(35) NOT NULL,
-	anagrafica VARCHAR(70),
-	indirizzo VARCHAR(70),
-	civico VARCHAR(16),
-	cap VARCHAR(16),
-	localita VARCHAR(35),
-	provincia VARCHAR(35),
-	nazione VARCHAR(2),
-	email VARCHAR(256),
-	cellulare VARCHAR(35),
-	-- fk/pk columns
-	id BIGINT DEFAULT nextval('seq_soggetti_debitori') NOT NULL,
-	id_documento BIGINT NOT NULL,
-	-- unique constraints
-	CONSTRAINT unique_soggetti_debitori_1 UNIQUE (id_documento, ordine),
-	-- fk/pk keys constraints
-	CONSTRAINT fk_sgd_id_documento FOREIGN KEY (id_documento) REFERENCES documenti(id),
-	CONSTRAINT pk_soggetti_debitori PRIMARY KEY (id)
-);
 
 CREATE TABLE IF NOT EXISTS versamenti
 (
+	cod_versamento_lotto VARCHAR(35),
+	cod_bundlekey VARCHAR(256),
+	incasso VARCHAR(1),
+	avv_mail_data_prom_scadenza TIMESTAMP,
+	avv_mail_prom_scad_notificato BOOLEAN,
+	avv_app_io_data_prom_scadenza TIMESTAMP,
+	avv_app_io_prom_scad_notificat BOOLEAN,
+	id_uo BIGINT,
 	cod_versamento_ente VARCHAR(35) NOT NULL,
 	nome VARCHAR(35),
 	importo_totale DOUBLE PRECISION NOT NULL,
@@ -445,6 +460,7 @@ CREATE TABLE IF NOT EXISTS versamenti
 	send_abilitato BOOLEAN NOT NULL,
 	send_importo_totale DOUBLE PRECISION,
 	send_data_aggiornamento TIMESTAMP,
+	send_nav VARCHAR(18),
 	-- fk/pk columns
 	id BIGINT DEFAULT nextval('seq_versamenti') NOT NULL,
 	id_tipo_versamento_dominio BIGINT NOT NULL,
@@ -466,6 +482,7 @@ CREATE TABLE IF NOT EXISTS versamenti
 
 CREATE TABLE IF NOT EXISTS singoli_versamenti
 (
+	dati_allegati TEXT,
 	cod_singolo_versamento_ente VARCHAR(70) NOT NULL,
 	stato_singolo_versamento VARCHAR(35) NOT NULL,
 	importo_singolo_versamento DOUBLE PRECISION NOT NULL,
@@ -670,6 +687,7 @@ CREATE TABLE IF NOT EXISTS applicazioni (
 );
 
 CREATE TABLE IF NOT EXISTS domini (
+	pagamento_sito BOOLEAN NOT NULL DEFAULT false,
     id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     cod_dominio VARCHAR(35) NOT NULL,
     gln VARCHAR(35),
@@ -712,6 +730,23 @@ CREATE SEQUENCE IF NOT EXISTS seq_rpt start 1 increment 1 maxvalue 9223372036854
 
 CREATE TABLE IF NOT EXISTS rpt
 (
+	tipo_identificativo_attestante VARCHAR(1),
+	identificativo_attestante VARCHAR(35),
+	denominazione_attestante VARCHAR(70),
+	cod_sessione VARCHAR(255),
+	cod_sessione_portale VARCHAR(255),
+	psp_redirect_url VARCHAR(512),
+	cod_canale VARCHAR(35),
+	cod_psp VARCHAR(35),
+	cod_intermediario_psp VARCHAR(35),
+	callback_url TEXT,
+	importo_totale_pagato DOUBLE PRECISION,
+	cod_msg_ricevuta VARCHAR(35),
+	cod_transazione_rt VARCHAR(36),
+	stato_conservazione VARCHAR(35),
+	descrizione_stato_cons VARCHAR(512),
+	data_conservazione TIMESTAMP,
+	bloccante BOOLEAN NOT NULL DEFAULT true,
 	iuv VARCHAR(35) NOT NULL,
 	ccp VARCHAR(35) NOT NULL,
 	cod_dominio VARCHAR(35) NOT NULL,
@@ -857,6 +892,17 @@ CREATE SEQUENCE IF NOT EXISTS seq_pagamenti start 1 increment 1 maxvalue 9223372
 
 CREATE TABLE IF NOT EXISTS pagamenti
 (
+	commissioni_psp DOUBLE PRECISION,
+	tipo_allegato VARCHAR(2),
+	allegato BYTEA,
+	data_acquisizione_revoca TIMESTAMP,
+	causale_revoca VARCHAR(140),
+	dati_revoca VARCHAR(140),
+	importo_revocato DOUBLE PRECISION,
+	esito_revoca VARCHAR(140),
+	dati_esito_revoca VARCHAR(140),
+	id_singolo_versamento BIGINT,
+	id_incasso BIGINT,
 	cod_dominio VARCHAR(35) NOT NULL,
 	iuv VARCHAR(35) NOT NULL,
 	iur VARCHAR(35) NOT NULL,
@@ -880,6 +926,13 @@ CREATE SEQUENCE IF NOT EXISTS seq_fr start 1 increment 1 maxvalue 92233720368547
 
 CREATE TABLE IF NOT EXISTS fr
 (
+	xml BYTEA,
+	ragione_sociale_psp VARCHAR(255),
+	ragione_sociale_dominio VARCHAR(255),
+	descrizione_stato TEXT,
+	data_ora_pubblicazione TIMESTAMP,
+	data_ora_aggiornamento TIMESTAMP,
+	id_incasso BIGINT,
 	id_dominio BIGINT NOT NULL,
 	cod_dominio VARCHAR(35) NOT NULL,
 	cod_flusso VARCHAR(35) NOT NULL,
@@ -907,6 +960,8 @@ CREATE SEQUENCE IF NOT EXISTS seq_rendicontazioni start 1 increment 1 maxvalue 9
 
 CREATE TABLE IF NOT EXISTS rendicontazioni
 (
+	esegui_recupero_rt BOOLEAN NOT NULL DEFAULT true,
+	notifica_inviata BOOLEAN NOT NULL DEFAULT false,
 	iuv VARCHAR(35) NOT NULL,
 	iur VARCHAR(35) NOT NULL,
 	indice_dati INT,

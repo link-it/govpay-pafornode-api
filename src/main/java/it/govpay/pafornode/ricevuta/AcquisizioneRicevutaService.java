@@ -19,7 +19,7 @@ import it.govpay.common.repository.TipoVersamentoDominioRepository;
 import it.govpay.pendenze.entity.Pagamento;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.entity.Rpt;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.StatoOpzionePagamento;
 import it.govpay.pendenze.model.StatoPagamento;
@@ -504,7 +504,7 @@ public class AcquisizioneRicevutaService {
         TipoVersamentoEntity tipoVersamento = tipoVersamentoDominio.getTipoVersamento();
 
         if (risolviFlag(tipoVersamentoDominio.getAvvMailPromRicAbilitato(), tipoVersamento.getAvvMailPromRicAbilitato())) {
-            SoggettoDebitore debitore = debitorePrincipale(pendenza);
+            Debitore debitore = debitoreDi(pendenza);
             if (debitore != null && debitore.getEmail() != null) {
                 Promemoria promemoria = new Promemoria();
                 promemoria.setIdVersamento(pendenza.getId());
@@ -524,7 +524,7 @@ public class AcquisizioneRicevutaService {
 
         if (risolviFlag(tipoVersamentoDominio.getAvvAppIoPromRicAbilitato(),
                 tipoVersamento.getAvvAppIoPromRicAbilitato())) {
-            SoggettoDebitore debitore = debitorePrincipale(pendenza);
+            Debitore debitore = debitoreDi(pendenza);
             if (debitore != null && debitore.getIdentificativo() != null) {
                 NotificaAppIo notificaAppIo = new NotificaAppIo();
                 notificaAppIo.setIdVersamento(pendenza.getId());
@@ -565,9 +565,8 @@ public class AcquisizioneRicevutaService {
         return Boolean.TRUE.equals(defaultGlobale);
     }
 
-    /** Il debitore di {@code ordine} piu' basso, stesso principio del "soggetto di ordine 0" legacy. */
-    private SoggettoDebitore debitorePrincipale(Pendenza pendenza) {
-        return pendenza.getOpzionePagamento().getPosizioneDebitoria().getSoggettiDebitori().stream()
-                .min((a, b) -> Integer.compare(a.getOrdine(), b.getOrdine())).orElse(null);
+    /** Il debitore a cui appartiene l'avviso: quello dell'opzione di pagamento della pendenza. */
+    private Debitore debitoreDi(Pendenza pendenza) {
+        return pendenza.getOpzionePagamento().getPdDebitore().getDebitore();
     }
 }

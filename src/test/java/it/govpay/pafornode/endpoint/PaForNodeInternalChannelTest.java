@@ -1,5 +1,6 @@
 package it.govpay.pafornode.endpoint;
 
+import it.govpay.pafornode.PosizioniDiTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -43,7 +44,7 @@ import it.govpay.pafornode.security.UtenzaRepository;
 import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
 import it.govpay.pendenze.entity.OpzionePagamento;
 import it.govpay.pendenze.entity.PosizioneDebitoria;
-import it.govpay.pendenze.entity.SoggettoDebitore;
+import it.govpay.pendenze.entity.Debitore;
 import it.govpay.pendenze.entity.VocePendenza;
 import it.govpay.pendenze.model.StatoPendenza;
 import it.govpay.pendenze.model.StatoVocePendenza;
@@ -196,15 +197,15 @@ class PaForNodeInternalChannelTest {
 		posizione.setIdDominio(idDominio);
 		posizione.setDescrizione("Descrizione della posizione di test");
 
-		SoggettoDebitore soggetto = new SoggettoDebitore();
+		Debitore soggetto = new Debitore();
 		soggetto.setTipo(TipoSoggetto.F);
 		soggetto.setIdentificativo("RSSMRA80A01H501U");
 		soggetto.setAnagrafica("Mario Rossi");
-		posizione.addSoggettoDebitore(soggetto);
+		PosizioniDiTest.aggiungiDebitore(posizione, soggetto);
 
 		OpzionePagamento opzione = new OpzionePagamento();
 		opzione.setTipologia(TipologiaOpzionePagamento.SOLUZIONE_UNICA);
-		posizione.addOpzionePagamento(opzione);
+		PosizioniDiTest.aggiungiOpzione(posizione, opzione);
 
 		it.govpay.pendenze.entity.Pendenza pendenza = new it.govpay.pendenze.entity.Pendenza();
 		pendenza.setIdApplicazione(idApplicazione);

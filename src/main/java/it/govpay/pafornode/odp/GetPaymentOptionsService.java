@@ -88,11 +88,12 @@ public class GetPaymentOptionsService {
 		Pendenza pendenza = pendenzaRepository.findByIdDominioAndIuv(dominio.getId(), iuv)
 				.orElseThrow(() -> new NdpException(FaultPa.PAA_PAGAMENTO_SCONOSCIUTO, codDominio));
 
+		PaForNodeChecks.verificaPubblicata(pendenza, codDominio, clock);
 		PosizioneDebitoria posizione = pendenza.getOpzionePagamento().getPosizioneDebitoria();
-		List<PaymentOption> paymentOptions = OpzionePagamentoResponseMapper.opzioniRestituibili(posizione, clock);
+		List<PaymentOption> paymentOptions = OpzionePagamentoResponseMapper.opzioniRestituibili(pendenza.getOpzionePagamento().getPdDebitore(), clock);
 
 		if (paymentOptions.isEmpty()) {
-			// La posizione non ha NESSUNA opzione DISPONIBILE/ATTIVATA (es. tutte ANNULLATA, o
+			// Il debitore dell'avviso non ha NESSUNA opzione DISPONIBILE/ATTIVATA (es. tutte ANNULLATA, o
 			// un'unica opzione gia' esaurita): nulla da restituire. verificaStatoPagabile sulla
 			// pendenza del NAV richiesto da' un fault specifico (ANNULLATO/scaduta/duplicata);
 			// se anche quella passasse (non dovrebbe succedere per costruzione con la lista

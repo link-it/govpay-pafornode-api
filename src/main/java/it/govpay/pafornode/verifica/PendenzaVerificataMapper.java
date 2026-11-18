@@ -30,7 +30,8 @@ import it.govpay.pendenze.comando.AggiornamentoPendenza;
 import it.govpay.pendenze.comando.DatiOpzionePagamento;
 import it.govpay.pendenze.comando.DatiPendenza;
 import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
-import it.govpay.pendenze.comando.DatiSoggettoDebitore;
+import it.govpay.pendenze.comando.DatiDebitore;
+import it.govpay.pendenze.comando.DatiPdDebitore;
 import it.govpay.pendenze.comando.DatiVocePendenza;
 import it.govpay.pendenze.entity.Pendenza;
 import it.govpay.pendenze.model.TipologiaOpzionePagamento;
@@ -146,8 +147,8 @@ public class PendenzaVerificataMapper {
 				codificaIuvEffettiva(tvd), dto.getImporto().doubleValue(), numeroAvviso, null,
 				aMezzanotte(dto.getDataValidita()), aMezzanotte(dto.getDataScadenza()), voci, dto.getCausale());
 		DatiOpzionePagamento opzione = new DatiOpzionePagamento(TipologiaOpzionePagamento.SOLUZIONE_UNICA, null, null,
-				null, List.of(datiPendenza));
-		DatiSoggettoDebitore soggetto = toDatiSoggettoDebitore(dto.getSoggettoPagatore());
+				null, false, null, List.of(datiPendenza));
+		DatiPdDebitore debitore = new DatiPdDebitore(toDatiDebitore(dto.getSoggettoPagatore()), List.of(opzione));
 
 		NuovoDocumento documento = dto.getDocumento();
 		String codDocumento = documento != null ? documento.getIdentificativo()
@@ -155,11 +156,11 @@ public class PendenzaVerificataMapper {
 		String descrizioneDocumento = documento != null ? documento.getDescrizione() : dto.getCausale();
 
 		return new DatiPosizioneDebitoria(codDocumento, idApplicazione, idDominio, idUnitaOperativa,
-				descrizioneDocumento, null, false, null, List.of(soggetto), List.of(opzione));
+				descrizioneDocumento, null, List.of(debitore));
 	}
 
-	private static DatiSoggettoDebitore toDatiSoggettoDebitore(Soggetto dto) {
-		return new DatiSoggettoDebitore(it.govpay.pendenze.model.TipoSoggetto.valueOf(dto.getTipo().name()),
+	private static DatiDebitore toDatiDebitore(Soggetto dto) {
+		return new DatiDebitore(it.govpay.pendenze.model.TipoSoggetto.valueOf(dto.getTipo().name()),
 				dto.getIdentificativo(), dto.getAnagrafica(), dto.getIndirizzo(), dto.getCivico(), dto.getCap(),
 				dto.getLocalita(), dto.getProvincia(), dto.getNazione(), dto.getEmail(), dto.getCellulare());
 	}

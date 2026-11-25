@@ -5,11 +5,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.AutoConfigurationExcludeFilter;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.context.TypeExcludeFilter;
 import org.springframework.boot.web.servlet.support.SpringBootServletInitializer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.ComponentScan.Filter;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.orm.jpa.persistenceunit.PersistenceManagedTypes;
@@ -54,7 +58,10 @@ import it.govpay.pafornode.security.UtenzaEntity;
  * {@code it.govpay.pafornode}, non in {@code it.govpay.pendenze} come
  * {@code GovPayPendenzeApiApplication} — senza di esso i {@code @Service}/{@code @Component}
  * di govpay-common-pendenze (es. {@code GeneratoreProgressivoIuv}, non un'autoconfigurazione)
- * non verrebbero scoperti.</p>
+ * non verrebbero scoperti. La scansione ha gli stessi filtri di esclusione di
+ * {@code @SpringBootApplication}: le autoconfigurazioni della libreria (fra cui quella del
+ * {@code GeneratoreIuv}) si caricano solo come autoconfigurazioni, dopo i bean da cui
+ * dipendono.</p>
  *
  * <p>{@code it.govpay.pafornode.security} aggiunto a {@code @EnableJpaRepositories}:
  * {@link it.govpay.pafornode.security.IntermediarioPrincipalRepository}, usato da
@@ -79,7 +86,9 @@ import it.govpay.pafornode.security.UtenzaEntity;
  * entity di govpay-common.</p>
  */
 @SpringBootApplication
-@ComponentScan(basePackages = { "it.govpay.pafornode", "it.govpay.pendenze" })
+@ComponentScan(basePackages = { "it.govpay.pafornode", "it.govpay.pendenze" }, excludeFilters = {
+		@Filter(type = FilterType.CUSTOM, classes = TypeExcludeFilter.class),
+		@Filter(type = FilterType.CUSTOM, classes = AutoConfigurationExcludeFilter.class) })
 @EnableJpaRepositories(basePackages = { "it.govpay.pendenze.repository", "it.govpay.common.repository",
 		"it.govpay.pafornode.security", "it.govpay.pafornode.ricevuta" })
 public class Application extends SpringBootServletInitializer {

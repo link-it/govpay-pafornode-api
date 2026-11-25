@@ -3,6 +3,8 @@ package it.govpay.pafornode.verifica;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
@@ -12,11 +14,13 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import it.govpay.common.entity.IbanAccreditoEntity;
 import it.govpay.common.entity.TipoVersamentoDominioEntity;
 import it.govpay.common.entity.TipoVersamentoEntity;
+import it.govpay.common.entity.UnitaOperativaEntity;
 import it.govpay.common.repository.IbanAccreditoRepository;
 import it.govpay.common.repository.TipoTributoRepository;
 import it.govpay.common.repository.TipoVersamentoDominioRepository;
@@ -34,7 +38,7 @@ import it.govpay.pendenze.comando.DatiPosizioneDebitoria;
 import it.govpay.pendenze.comando.DatiVocePendenza;
 
 /**
- * {@code toDatiVocePendenza} (ramo IBAN diretto, tassonomia) e
+ * {@code toDatiVocePendenza} (ramo IBAN diretto, tassonomia), unita' operativa in creazione e
  * {@code verificaIdentita}/completamento NAV di {@link PendenzaVerificataMapper} — gli altri
  * metodi sono esercitati indirettamente dai test di integrazione di
  * {@code PaForNodeEndpointTest}/{@code AttualizzazionePendenzaServiceTest}.
@@ -56,6 +60,92 @@ class PendenzaVerificataMapperTest {
 	private final PendenzaVerificataMapper mapper = new PendenzaVerificataMapper(tipoTributoRepository,
 			tributoRepository, ibanAccreditoRepository, tipoVersamentoDominioRepository, unitaOperativaRepository,
 			clock);
+
+	@BeforeEach
+	void unitaOperativaEcCensita() {
+		unitaOperativa("EC", 100L, true);
+	}
+
+	private void unitaOperativa(String codUo, Long id, boolean abilitata) {
+		UnitaOperativaEntity unitaOperativa = new UnitaOperativaEntity();
+		unitaOperativa.setId(id);
+		unitaOperativa.setAbilitato(abilitata);
+		when(unitaOperativaRepository.findByCodUoAndDominioId(codUo, ID_DOMINIO))
+				.thenReturn(Optional.of(unitaOperativa));
+	}
+
+	private void nessunaUnitaOperativaEc() {
+		when(unitaOperativaRepository.findByCodUoAndDominioId("EC", ID_DOMINIO)).thenReturn(Optional.empty());
+	}
+
+	/** Comando di creazione per una pendenza con voce bollo, che non richiede altre anagrafiche. */
+	private DatiPosizioneDebitoria creaConUnitaOperativa(String idUnitaOperativa) {
+		tipoVersamentoDominioPersistito();
+		NuovaVocePendenza voce = new NuovaVocePendenza();
+		voce.setIdVocePendenza("voce-1");
+		voce.setImporto(BigDecimal.TEN);
+		voce.setDescrizione("marca da bollo");
+		voce.setTipoBollo(TipoRiferimentoVocePendenza.TipoBolloEnum._01);
+		voce.setHashDocumento("hash");
+		voce.setProvinciaResidenza("RO");
+		voce.setCodiceTassonomicoPagoPA("9/0101100IM");
+		NuovaPendenza dto = nuovaPendenza(voce);
+		dto.setIdUnitaOperativa(idUnitaOperativa);
+		return mapper.creaDatiPosizioneDebitoria(dto, 1L, ID_DOMINIO, NUMERO_AVVISO_RICHIESTO);
+	}
+
+	@Test
+	void unitaOperativaOmessaValeEc() {
+		assertThat(creaConUnitaOperativa(null).idUnitaOperativa()).isEqualTo(100L);
+	}
+
+	@Test
+	void unitaOperativaOmessaConEcAssenteERifiutata() {
+		nessunaUnitaOperativaEc();
+
+		assertThatThrownBy(() -> creaConUnitaOperativa(null)).isInstanceOf(IllegalStateException.class)
+				.hasMessageContaining("nessuna unita' operativa [EC]");
+	}
+
+	@Test
+	void unitaOperativaOmessaConEcDisabilitataERifiutata() {
+		unitaOperativa("EC", 100L, false);
+
+		assertThatThrownBy(() -> creaConUnitaOperativa(null)).isInstanceOf(IllegalStateException.class)
+				.hasMessageContaining("[EC]").hasMessageContaining("non e' abilitata");
+	}
+
+	@Test
+	void unitaOperativaIndicataEAssenteERifiutata() {
+		assertThatThrownBy(() -> creaConUnitaOperativa("UO1")).isInstanceOf(IllegalStateException.class)
+				.hasMessageContaining("nessuna unita' operativa [UO1]");
+	}
+
+	@Test
+	void unitaOperativaIndicataEDisabilitataERifiutata() {
+		unitaOperativa("UO1", 200L, false);
+
+		assertThatThrownBy(() -> creaConUnitaOperativa("UO1")).isInstanceOf(IllegalStateException.class)
+				.hasMessageContaining("[UO1]").hasMessageContaining("non e' abilitata");
+	}
+
+	@Test
+	void unitaOperativaIndicataEValidaNonRichiedeEcAssente() {
+		nessunaUnitaOperativaEc();
+		unitaOperativa("UO1", 200L, true);
+
+		assertThat(creaConUnitaOperativa("UO1").idUnitaOperativa()).isEqualTo(200L);
+		verify(unitaOperativaRepository, never()).findByCodUoAndDominioId("EC", ID_DOMINIO);
+	}
+
+	@Test
+	void unitaOperativaIndicataEValidaNonRichiedeEcAbilitata() {
+		unitaOperativa("EC", 100L, false);
+		unitaOperativa("UO1", 200L, true);
+
+		assertThat(creaConUnitaOperativa("UO1").idUnitaOperativa()).isEqualTo(200L);
+		verify(unitaOperativaRepository, never()).findByCodUoAndDominioId("EC", ID_DOMINIO);
+	}
 
 	private NuovaPendenza nuovaPendenza(NuovaVocePendenza voce) {
 		Soggetto soggetto = new Soggetto();

@@ -86,7 +86,7 @@ mvn clean install -P jar -Dowasp.phase=none
 
 ## Configurazione
 
-Le proprietà si impostano in `application.properties`, da riga di comando (`-D<proprietà>=<valore>`) o con le variabili d'ambiente. Molte proprietà hanno una variabile d'ambiente dedicata, indicata nelle tabelle; per le altre valgono le variabili equivalenti di Spring Boot (es. `logging.level.it.govpay` → `LOGGING_LEVEL_IT_GOVPAY`, `govpay.auth.ssl.enabled` → `GOVPAY_AUTH_SSL_ENABLED`).
+Le proprietà si impostano in `application.properties`, da riga di comando (`-D<proprietà>=<valore>`) o con le variabili d'ambiente. Molte proprietà hanno una variabile d'ambiente dedicata, indicata nelle tabelle; per le altre valgono le variabili equivalenti di Spring Boot (es. `logging.level.it.govpay` → `LOGGING_LEVEL_IT_GOVPAY`, `govpay.auth.ssl.enabled` → `GOVPAY_AUTH_SSL_ENABLED`). Fanno eccezione le proprietà `spring.datasource.hikari.connection-*`: vedi [Database](#database).
 
 ### Server
 
@@ -113,7 +113,10 @@ Per terminare il TLS nell'applicazione (metodo SSL) si usano le proprietà `serv
 | `spring.jpa.open-in-view` | - | `false` | Sessione JPA limitata al servizio, non estesa alla vista |
 | `spring.datasource.hikari.minimum-idle` | - | `10` (`2` nel container, `GOVPAY_PAFORNODE_MIN_POOL`) | Connessioni minime inattive del pool |
 | `spring.datasource.hikari.maximum-pool-size` | - | `10` (`5` nel container, `GOVPAY_PAFORNODE_MAX_POOL`) | Connessioni massime del pool |
+| `spring.datasource.hikari.transaction-isolation` | - | `TRANSACTION_READ_COMMITTED` | Isolamento delle transazioni, lo stesso del core GovPay. Valori: `TRANSACTION_READ_UNCOMMITTED`, `TRANSACTION_READ_COMMITTED`, `TRANSACTION_REPEATABLE_READ`, `TRANSACTION_SERIALIZABLE`. Senza questa proprietà vale il default del database, su MySQL `REPEATABLE-READ`; con `spring.datasource.jndi-name` vale quello del datasource dell'application server |
 | `govpay.pendenze.fuso-orario` | - | `Europe/Rome` | Fuso orario con cui govpay-common-pendenze interpreta le date del database (colonne `TIMESTAMP` senza fuso) |
+
+Le proprietà `spring.datasource.hikari.connection-*` (es. `connection-timeout`) vanno scritte come variabile d'ambiente **senza** il trattino basso dopo `CONNECTION`: `SPRING_DATASOURCE_HIKARI_CONNECTIONTIMEOUT`, non `SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT`. Con il trattino basso Spring Boot cerca anche la proprietà `connection` del pool, apre una connessione prima di aver applicato la configurazione e l'avvio fallisce con `The configuration of the pool is sealed once started` sulla proprietà `transaction-isolation`.
 
 I driver JDBC non sono inclusi nel jar: vedi [Esecuzione](#esecuzione).
 

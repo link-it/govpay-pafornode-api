@@ -13,7 +13,6 @@ import it.govpay.common.entity.IbanAccreditoEntity;
 import it.govpay.common.entity.TipoTributoEntity;
 import it.govpay.common.entity.TipoVersamentoDominioEntity;
 import it.govpay.common.entity.TributoEntity;
-import it.govpay.common.entity.UnitaOperativaEntity;
 import it.govpay.common.repository.IbanAccreditoRepository;
 import it.govpay.common.repository.TipoTributoRepository;
 import it.govpay.common.repository.TipoVersamentoDominioRepository;
@@ -26,6 +25,7 @@ import it.govpay.ec.client.beans.PendenzaVerificata;
 import it.govpay.ec.client.beans.Soggetto;
 import it.govpay.pafornode.fault.FaultPa;
 import it.govpay.pafornode.fault.NdpException;
+import it.govpay.pafornode.rpt.UnitaOperativaResolver;
 import it.govpay.pendenze.comando.AggiornamentoPendenza;
 import it.govpay.pendenze.comando.DatiOpzionePagamento;
 import it.govpay.pendenze.comando.DatiPendenza;
@@ -110,6 +110,8 @@ public class PendenzaVerificataMapper {
 	 * ({@code SOLUZIONE_UNICA}, nessuna rata/soglia: il contratto "Verifica" non porta
 	 * questi concetti).
 	 *
+	 * <p>L'unita' operativa segue {@link UnitaOperativaResolver#risolviIdPerCreazione}.
+	 *
 	 * <p>{@code numeroAvviso} e' opzionale sul contratto EC: se il gestionale non lo
 	 * dichiara, si usa {@code numeroAvvisoRichiesto} (quello per cui e' stata interrogata
 	 * "Verifica") invece di lasciarlo assente — altrimenti {@code
@@ -129,14 +131,8 @@ public class PendenzaVerificataMapper {
 				.orElseThrow(() -> new IllegalStateException(
 						"nessun tipo pendenza [" + dto.getIdTipoPendenza() + "] configurato per il dominio [id:"
 								+ idDominio + "]"));
-		Long idUnitaOperativa = null;
-		if (dto.getIdUnitaOperativa() != null) {
-			UnitaOperativaEntity unitaOperativa = unitaOperativaRepository
-					.findByCodUoAndDominioId(dto.getIdUnitaOperativa(), idDominio)
-					.orElseThrow(() -> new IllegalStateException("nessuna unita' operativa ["
-							+ dto.getIdUnitaOperativa() + "] per il dominio [id:" + idDominio + "]"));
-			idUnitaOperativa = unitaOperativa.getId();
-		}
+		Long idUnitaOperativa = UnitaOperativaResolver.risolviIdPerCreazione(unitaOperativaRepository, idDominio,
+				dto.getIdUnitaOperativa());
 
 		List<DatiVocePendenza> voci = new ArrayList<>();
 		for (NuovaVocePendenza v : dto.getVoci()) {

@@ -114,7 +114,8 @@ Per terminare il TLS nell'applicazione (metodo SSL) si usano le proprietà `serv
 | `spring.datasource.hikari.minimum-idle` | - | `10` (`2` nel container, `GOVPAY_PAFORNODE_MIN_POOL`) | Connessioni minime inattive del pool |
 | `spring.datasource.hikari.maximum-pool-size` | - | `10` (`5` nel container, `GOVPAY_PAFORNODE_MAX_POOL`) | Connessioni massime del pool |
 | `spring.datasource.hikari.transaction-isolation` | - | `TRANSACTION_READ_COMMITTED` | Isolamento delle transazioni, lo stesso del core GovPay. Valori: `TRANSACTION_READ_UNCOMMITTED`, `TRANSACTION_READ_COMMITTED`, `TRANSACTION_REPEATABLE_READ`, `TRANSACTION_SERIALIZABLE`. Senza questa proprietà vale il default del database, su MySQL `REPEATABLE-READ`; con `spring.datasource.jndi-name` vale quello del datasource dell'application server |
-| `govpay.pendenze.fuso-orario` | - | `Europe/Rome` | Fuso orario con cui govpay-common-pendenze interpreta le date del database (colonne `TIMESTAMP` senza fuso) |
+
+Le colonne con data e ora contengono l'ora `Europe/Rome` (vedi [Date sul database](https://github.com/link-it/govpay-common/blob/3.11.x/README.md#date-sul-database)): il fuso della JVM, nel container impostato con `TZ`, va lasciato a `Europe/Rome`.
 
 Le proprietà `spring.datasource.hikari.connection-*` (es. `connection-timeout`) vanno scritte come variabile d'ambiente **senza** il trattino basso dopo `CONNECTION`: `SPRING_DATASOURCE_HIKARI_CONNECTIONTIMEOUT`, non `SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT`. Con il trattino basso Spring Boot cerca anche la proprietà `connection` del pool, apre una connessione prima di aver applicato la configurazione e l'avvio fallisce con `The configuration of the pool is sealed once started` sulla proprietà `transaction-isolation`.
 
